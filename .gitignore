@@ -1,0 +1,10 @@
+# Local builds and macOS metadata
+*.app/
+.DS_Store
+.build/
+*.dSYM/
+
+# Local reference snapshots, test output, and obsolete project examples
+Reference/
+Examples/
+*.log
