@@ -1,5 +1,33 @@
 # Verification
 
+## Performance update — 7 October 2026
+
+236 rendering and session checks passed on the final local build, including the public Nikon NEF fixture and 40 additional checks/waits covering the performance changes. The original 196 checks continue to pass. Product code was built with the normal optimized arm64 build. The temporary signed bundle passes strict signature verification, and its executable hash matches the local `Meld.app`. Finder/iCloud can reattach metadata to the local app after a successful verification; the signed staging copy printed by `build.sh` stays outside that directory. The installed app and running session were not replaced or restarted.
+
+- Recipes, originals, edits and undo share immutable decoded source images; there is no unbounded global cache or intermediate PNG compression during import. Full working images remain bounded to 2400 pixels for generation, 3200 for direct import. Reusable 1000-pixel sources serve the gallery and adjustment drafts; small sidebar thumbnails avoid repeated decoding in view bodies.
+- The first group of six renders after three usable sources, then the pool grows to at most 12. All 36 previews, balanced styles, source preservation, corrupt input handling, failure preservation, stars, edits and contact sheets still pass. Each generation rescans the folder to include files added since selection.
+- Continuous adjustment tests publish multiple previews during a gesture and settle to the latest pixels at 1000 pixels, or 2400 when magnified. Navigation resets Fit resolution and rejects results from previous refinement visits; comparison likewise rejects pending adjustment drafts.
+- Single and batch exports use their own serial queue and renderer. Tests verify export snapshot accuracy while adjustments continue, cancellation, and contact sheets containing completed exports. Obsolete folder scans and material gathering now honour cancellation.
+- Wide-gamut RGB colour and partial/transparent alpha survive preview resizing. RAW gallery rendering does not replace the developed export source, and RAW rendering/export remains valid after removing a temporary copy of its source file. Embedded camera previews remain a fallback, not a different-colour primary path.
+- Core Image renders are materialized on their worker queues. Contexts use a 128 MB render-task memory target, disabled intermediate caching, and release batch/export caches after completion. Decoded source retention trades some memory for speed: measured whole-process peak footprints were about 1.37 GB for synthetic material and 1.71 GB for the repeated-NEF set, versus 1.25/1.45 GB before. The task memory target is not a total process cap. The uncapped faster implementation peaked near 2–2.7 GB in these runs and was not retained.
+
+Bounded timings on Apple M2 Pro / 16 GB, macOS 27.0.1, optimized builds with normal graphics access and warm filesystem caches:
+
+| Actual model operation | Before | After |
+| --- | ---: | ---: |
+| First preview, 12 synthetic 2400×1600 JPEGs | 3.36 s | 0.22 s |
+| All 36 previews, synthetic | 8.22 s | 0.91 s |
+| First preview, 12 paths to the public NEF | 3.57 s | 0.49 s |
+| All 36 previews, NEF paths | 7.46 s | 1.67 s |
+| Six PNGs and contact sheet, synthetic | 2.46 s | 1.79 s |
+| Six PNGs and contact sheet, NEF paths | 1.85 s | 1.37 s |
+
+The RAW workload uses twelve paths to the same public fixture, not twelve distinct cameras or photographs. Recipes in model runs are randomized; these are bounded observations, not universal speed guarantees. About 21 draft renders completed during each one-second continuous slider test, versus no preview updates during the earlier trailing debounce. Final image settling was approximately 128–208 ms. An isolated queue check found comparable preview latency with and without a simultaneous single-image export; the earlier implementation approximately doubled it.
+
+Synthetic and RAW contact sheets were visually inspected. Desktop inspection was attempted again and still failed with ScreenCaptureKit error -3811, so a live pointer/keyboard walkthrough remains unverified. Native controls and layout are preserved. Profiling helpers, source fixtures, timings and test logs are confined to `/private/tmp/meld-performance-implementation/`; earlier baseline evidence remains in `/private/tmp/meld-perf-review.JDphAh/`.
+
+The build script now verifies the staged signature and removes leftover Finder/resource-fork metadata from the generated local app copy. Finder/iCloud reattached metadata during verification, so this cleanup is not a persistent fix for cloud-managed directories. Use the signed staging copy printed by the build script when verifying or distributing the app.
+
 ## Automatic playground — version 0.5, 7 October 2026
 
 196 rendering and session checks passed with the real Nikon NEF fixture enabled. The default session now follows source folder → 36 previews → refine and export picks. The gallery occupies the main window. Refinement offers distortion, pattern amount, colour, and contrast; the existing layer workspace is available through More controls. The established native toolbar, teal accent, and floating zoom controls remain.

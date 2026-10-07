@@ -2,16 +2,19 @@ import AppKit
 import CoreImage
 
 final class Renderer {
-    let context = CIContext(options: [.cacheIntermediates: false])
+    // Bound render-task memory as well as disabling cached intermediate buffers.
+    let context = CIContext(options: [.cacheIntermediates: false, .memoryTarget: 128])
     func render(_ art: Artwork, longEdge: Int, bypass: Bool = false) -> CGImage? {
         let ratio = art.ratio
         let w = ratio >= 1 ? longEdge : Int(Double(longEdge) * ratio)
         let h = ratio >= 1 ? Int(Double(longEdge) / ratio) : longEdge
         let rect = CGRect(x: 0, y: 0, width: w, height: h)
         var composite = CIImage(color: CIColor(cgColor: art.background.cg)).cropped(to: rect)
-        for layer in art.layers where layer.visible {
+        for layer in art.layers where layer.visible && layer.opacity > 0 {
             var source: CIImage?
-            if layer.material == .image, let data = layer.image { source = CIImage(data: data, options: [.applyOrientationProperty: true]) }
+            if layer.material == .image, let image = layer.image {
+                source = longEdge <= 640 ? image.previewImage : image.fullImage
+            }
             else if let cg = Self.pattern(layer, w: w, h: h) { source = CIImage(cgImage: cg) }
             guard var source else { continue }
             let extent = source.extent
@@ -51,7 +54,7 @@ final class Renderer {
             }
             composite = composite.applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: warp.saturation, kCIInputContrastKey: warp.contrast]).cropped(to: rect)
         }
-        return context.createCGImage(composite, from: rect, format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+        return context.createCGImage(composite, from: rect, format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB), deferred: false)
     }
     static func canvas(w: Int, h: Int) -> CGContext? {
         CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)

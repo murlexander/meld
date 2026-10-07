@@ -8,6 +8,10 @@ swiftc -swift-version 5 -O -target arm64-apple-macosx14.0 -module-cache-path /pr
 cp Info.plist "$stage/Meld.app/Contents/Info.plist"
 if [[ -f Resources/Meld.icns ]]; then cp Resources/Meld.icns "$stage/Meld.app/Contents/Resources/"; fi
 codesign --force --sign - "$stage/Meld.app"
+codesign --verify --deep --strict "$stage/Meld.app"
 ditto --norsrc "$stage/Meld.app" Meld.app
+# An existing destination may retain Finder metadata even with --norsrc.
+xattr -dr com.apple.FinderInfo Meld.app 2>/dev/null || true
+xattr -dr com.apple.ResourceFork Meld.app 2>/dev/null || true
 echo "Signed app: $stage/Meld.app"
 echo "Built Meld.app"

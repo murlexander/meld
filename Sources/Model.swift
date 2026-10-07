@@ -30,7 +30,7 @@ struct Layer: Identifiable, Equatable {
     var id = UUID()
     var name: String
     var material: Material
-    var image: Data? = nil
+    var image: SourceImage? = nil
     var sourcePath: String? = nil
     var visible = true
     var opacity = 1.0
@@ -99,7 +99,9 @@ final class Studio: ObservableObject {
     private let materialsQueue = DispatchQueue(label: "Meld.materials", qos: .userInitiated)
     private let materialLoader = MaterialLoader()
     private var scanToken = UUID()
+    private var scanJob = CancellableJob()
     private var surpriseToken = UUID()
+    private var surpriseJob = CancellableJob()
     private var lastMaterials: Set<URL> = []
     private var lastStyle: CompositionStyle?
     private var pendingImports = 0
@@ -110,10 +112,34 @@ final class Studio: ObservableObject {
     private var lastChange = Date.distantPast
     private var refinementHistory: [Refinement] = []
     private var refinementFuture: [Refinement] = []
-    private var job: DispatchWorkItem?
+    private struct PreviewScope: Equatable {
+        let visit: Int
+        let trial: UUID?
+        let comparing: Bool
+        let layers: [UUID]
+        let aspect: String
+        let edge: Int
+    }
+    private struct PreviewRequest {
+        let art: Artwork
+        let scope: PreviewScope
+        let token: Int
+        let interactive: Bool
+    }
+    private var pendingPreview: PreviewRequest?
+    private var previewScope: PreviewScope?
+    private var previewWake: DispatchWorkItem?
+    private var previewWakeDate: Date?
+    private var previewInFlight = false
+    private var lastPreviewStart = Date.distantPast
+    private var lastPreviewChange = Date.distantPast
     private let queue = DispatchQueue(label: "Meld.render", qos: .userInitiated)
     private var generation = 0
+    private var previewVisit = 0
     let renderer = Renderer()
+    private let batchRenderer = Renderer()
+    private let exportQueue = DispatchQueue(label: "Meld.export", qos: .userInitiated)
+    private let exportRenderer = Renderer()
     var current: Layer? { art.layers.first { $0.id == selected } }
     var canUndo: Bool { !history.isEmpty }
     var canRedo: Bool { !future.isEmpty }
@@ -146,9 +172,11 @@ final class Studio: ObservableObject {
         } else if panel.runModal() == .OK, let url = panel.url { setSourceFolder(url) }
     }
     func setSourceFolder(_ url: URL, scan: Bool = true) {
-        storeActiveTrial(); activeTrialID = nil; stage = .material
+        storeActiveTrial(); cancelPreview(); activeTrialID = nil; stage = .material
         cancelTrials()
+        scanJob.cancel()
         scanToken = UUID(); sourceScanning = false
+        surpriseJob.cancel()
         surpriseToken = UUID(); gathering = false; lastMaterials = []; lastStyle = nil
         sourceFolder = url; sourceCount = 0
         if restoreSource {
@@ -162,6 +190,7 @@ final class Studio: ObservableObject {
     }
     func clearSourceFolder() {
         cancelTrials()
+        scanJob.cancel(); surpriseJob.cancel()
         scanToken = UUID(); surpriseToken = UUID(); sourceScanning = false; gathering = false
         sourceFolder = nil; sourceCount = 0; lastMaterials = []; sourceMessage = "Choose a folder for Surprise me."
         if restoreSource {
@@ -171,10 +200,11 @@ final class Studio: ObservableObject {
     }
     func refreshSource() {
         guard let folder = sourceFolder else { return }
+        scanJob.cancel(); let task = CancellableJob(); scanJob = task
         scanToken = UUID(); let token = scanToken
         sourceScanning = true; sourceMessage = "Looking for images…"
         materialsQueue.async { [weak self] in
-            let result = Result { try MaterialLoader.scan(folder) }
+            let result = Result { try MaterialLoader.scan(folder, cancelled: { task.cancelled }) }
             DispatchQueue.main.async {
                 guard let self, self.scanToken == token else { return }
                 self.sourceScanning = false
@@ -198,7 +228,7 @@ final class Studio: ObservableObject {
             if history.count > 50 { history.removeFirst(); refinementHistory.removeFirst() }
         }
         lastKey = key; lastChange = Date(); future.removeAll(); refinementFuture.removeAll()
-        revision += 1; schedule()
+        revision += 1; schedule(interactive: true)
     }
     func updateLayer(_ key: String, _ body: (inout Layer) -> Void) {
         guard let id = selected else { return }
@@ -292,26 +322,71 @@ final class Studio: ObservableObject {
         previewLongEdge = edge
         schedule()
     }
-    func schedule() {
-        job?.cancel(); generation += 1
-        let token = generation
+    // Main-thread scheduler: one render in flight and one replaceable latest request.
+    // Completed drafts of this same canvas can appear during a gesture; a new trial,
+    // comparison, shape, or zoom scope rejects the old canvas's completion entirely.
+    func schedule(interactive: Bool = false) {
+        generation += 1
         let snapshot = comparing ? activeTrial?.original ?? art : art
-        let raw = comparing && activeTrialID == nil; let edge = previewLongEdge
-        rendering = true
+        let scope = PreviewScope(visit: previewVisit, trial: activeTrialID, comparing: comparing,
+                                 layers: snapshot.layers.map(\.id), aspect: snapshot.aspect, edge: previewLongEdge)
+        previewScope = scope
+        lastPreviewChange = Date()
+        pendingPreview = PreviewRequest(art: snapshot, scope: scope, token: generation, interactive: interactive)
+        if !rendering { rendering = true }
+        wakePreview()
+    }
+    private func wakePreview(after delay: TimeInterval = 0) {
+        guard !previewInFlight, pendingPreview != nil else { return }
+        // Events may advance a final-quality deadline, but never postpone a draft.
+        let wait = max(0, max(delay, 0.05 - Date().timeIntervalSince(lastPreviewStart)))
+        let due = Date().addingTimeInterval(wait)
+        if let scheduled = previewWakeDate, scheduled <= due { return }
+        previewWake?.cancel()
+        previewWakeDate = due
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            let image = self.renderer.render(snapshot, longEdge: edge, bypass: raw)
+            self.previewWake = nil; self.previewWakeDate = nil
+            self.startPreview()
+        }
+        previewWake = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, wait), execute: work)
+    }
+    private func startPreview() {
+        guard !previewInFlight, let request = pendingPreview else { return }
+        pendingPreview = nil; previewInFlight = true; lastPreviewStart = Date()
+        let draft = request.interactive && Date().timeIntervalSince(lastPreviewChange) < 0.12
+        let edge = draft ? min(640, request.scope.edge) : request.scope.edge
+        queue.async { [weak self] in
+            guard let self else { return }
+            let image = autoreleasepool {
+                self.renderer.render(request.art, longEdge: edge,
+                                     bypass: request.scope.comparing && request.scope.trial == nil)
+            }
             DispatchQueue.main.async {
-                guard self.generation == token else { return }
-                self.preview = image.map { NSImage(cgImage: $0, size: .zero) }
-                self.rendering = false
-                if image == nil { self.error = "The preview couldn’t render. Try undoing the last change." }
+                self.previewInFlight = false
+                if self.previewScope == request.scope {
+                    self.preview = image.map { NSImage(cgImage: $0, size: .zero) }
+                    if image == nil { self.error = "The preview couldn’t render. Try undoing the last change." }
+                    if draft && self.generation == request.token {
+                        self.pendingPreview = PreviewRequest(art: request.art, scope: request.scope,
+                                                             token: request.token, interactive: false)
+                    }
+                }
+                if self.pendingPreview != nil {
+                    let delay = self.pendingPreview?.interactive == false && draft
+                        ? max(0, 0.12 - Date().timeIntervalSince(self.lastPreviewChange)) : 0
+                    self.wakePreview(after: delay)
+                } else { self.rendering = false }
             }
         }
-        job = work; queue.asyncAfter(deadline: .now() + 0.07, execute: work)
+    }
+    private func cancelPreview() {
+        generation += 1; previewVisit += 1; previewScope = nil; pendingPreview = nil
+        previewWake?.cancel(); previewWake = nil; previewWakeDate = nil; rendering = false
     }
     func loadStarter(record: Bool = true) {
-        let base = Layer(name: "Colour study", material: .image, image: Renderer.starterPNG())
+        let base = Layer(name: "Colour study", material: .image, image: Renderer.starterPNG().flatMap { SourceImage(data: $0) })
         let rings = Layer(name: "Rings", material: .rings, opacity: 0.35, blend: .softLight, rotation: -18, frequency: 13, ink: Ink(0.09,0.18,0.35), paper: Ink(0.95,0.69,0.3))
         var next = Artwork(); next.layers = [base, rings]; next.warp.wave = 0.13; next.warp.twist = 0.3
         if record { change("starter-\(UUID())") { $0 = next } } else { art = next; schedule() }
@@ -343,6 +418,7 @@ final class Studio: ObservableObject {
         }
     }
     private func surpriseFromFolder(_ folder: URL) {
+        surpriseJob.cancel(); let task = CancellableJob(); surpriseJob = task
         gathering = true; surpriseToken = UUID()
         let token = surpriseToken; let startingRevision = revision; let previous = lastMaterials
         let style = CompositionStyle.allCases.filter { $0 != lastStyle }.randomElement()!
@@ -351,19 +427,21 @@ final class Studio: ObservableObject {
         materialsQueue.async { [weak self] in
             guard let self else { return }
             do {
-                let scan = try MaterialLoader.scan(folder)
+                let scan = try MaterialLoader.scan(folder, cancelled: { task.cancelled })
                 let shuffled = scan.urls.shuffled()
                 // Prefer a fresh set when the library has enough choices.
                 let candidates = shuffled.filter { !previous.contains($0) } + shuffled.filter { previous.contains($0) }
                 let wanted = min(candidates.count, Int.random(in: 2...3))
                 var loaded: [LoadedMaterial] = []; var used: Set<URL> = []; var failed = 0
                 for url in candidates.prefix(32) {
+                    if task.cancelled { return }
                     if loaded.count >= wanted { break }
                     autoreleasepool {
-                        if let material = self.materialLoader.load(url) { loaded.append(material); used.insert(url) }
+                        if let material = self.materialLoader.load(url, cancelled: { task.cancelled }) { loaded.append(material); used.insert(url) }
                         else { failed += 1 }
                     }
                 }
+                guard !task.cancelled else { return }
                 let composition = TrialGenerator.compose(loaded.map { PreparedMaterial($0.layer) },
                     style: style, aspect: snapshot.aspect, seed: UInt64.random(in: 0...UInt64.max))
                 DispatchQueue.main.async {
@@ -409,16 +487,16 @@ final class Studio: ObservableObject {
         }
     }
     func showTrials() {
-        storeActiveTrial(); activeTrialID = nil
+        storeActiveTrial(); cancelPreview(); activeTrialID = nil
         stage = trials.isEmpty && !makingTrials ? .material : .previews
     }
     func chooseMaterial() {
         cancelTrials()
-        storeActiveTrial(); activeTrialID = nil; stage = .material
+        storeActiveTrial(); cancelPreview(); activeTrialID = nil; stage = .material
     }
     func makeTrials(count: Int = 36) {
         guard let folder = sourceFolder, !materialsBusy, !makingTrials, !exportingTrials else { return }
-        storeActiveTrial(); activeTrialID = nil; stage = .previews
+        storeActiveTrial(); cancelPreview(); activeTrialID = nil; stage = .previews
         // The interface offers one useful batch size. A bound also protects programmatic calls.
         let count = min(48, max(1, count))
         trialJob.cancel(); let task = CancellableJob(); trialJob = task
@@ -427,24 +505,31 @@ final class Studio: ObservableObject {
         let seed = UInt64.random(in: 0...UInt64.max)
         trialsQueue.async { [weak self] in
             guard let self else { return }
-            let loader = MaterialLoader(), renderer = Renderer()
+            let loader = MaterialLoader(), renderer = self.batchRenderer
+            defer { renderer.context.clearCaches() }
             do {
                 let scan = try MaterialLoader.scan(folder, cancelled: { task.cancelled })
                 let wanted = min(12, scan.urls.count)
                 var pool: [PreparedMaterial] = []; var skipped = 0
-                for url in scan.urls.shuffled().prefix(64) {
-                    if task.cancelled { return }
-                    if pool.count >= wanted { break }
-                    autoreleasepool {
-                        if let loaded = loader.load(url, maximum: 2400) { pool.append(PreparedMaterial(loaded.layer)) }
-                        else { skipped += 1 }
-                    }
-                    let loadedCount = pool.count
-                    DispatchQueue.main.async {
-                        guard self.trialJob === task, !task.cancelled else { return }
-                        self.trialMessage = "Gathering images · \(loadedCount) ready"
+                let candidates = Array(scan.urls.shuffled().prefix(64))
+                var candidateIndex = 0
+                func gather(until target: Int) {
+                    while pool.count < min(wanted, target), candidateIndex < candidates.count, !task.cancelled {
+                        let url = candidates[candidateIndex]; candidateIndex += 1
+                        autoreleasepool {
+                            if let loaded = loader.load(url, maximum: 2400, cancelled: { task.cancelled }), !task.cancelled {
+                                pool.append(PreparedMaterial(loaded.layer))
+                            } else if !task.cancelled { skipped += 1 }
+                        }
+                        let loadedCount = pool.count
+                        DispatchQueue.main.async {
+                            guard self.trialJob === task, !task.cancelled else { return }
+                            self.trialMessage = "Gathering images · \(loadedCount) ready"
+                        }
                     }
                 }
+                // Start with enough material for a recipe, then broaden each group of six.
+                gather(until: 3)
                 guard !task.cancelled else { return }
                 guard !pool.isEmpty else {
                     DispatchQueue.main.async {
@@ -457,9 +542,9 @@ final class Studio: ObservableObject {
                     return
                 }
                 let styles = TrialGenerator.styles(count: count, seed: seed)
-                let loadedCount = pool.count
                 var produced = 0
                 for (i, style) in styles.enumerated() {
+                    if i > 0 && i % 6 == 0 { gather(until: 3 + (i / 6) * 2) }
                     if task.cancelled { return }
                     let trial: Trial? = autoreleasepool {
                         let art = TrialGenerator.compose(pool, style: style, aspect: aspect, seed: seed &+ UInt64(i+1))
@@ -475,6 +560,7 @@ final class Studio: ObservableObject {
                         self.trialMessage = "Making previews · \(self.trials.count) of \(count)"
                     }
                 }
+                let loadedCount = pool.count
                 DispatchQueue.main.async {
                     guard self.trialJob === task, !task.cancelled else { return }
                     self.makingTrials = false; self.sourceCount = scan.urls.count
@@ -508,6 +594,8 @@ final class Studio: ObservableObject {
         if activeTrialID == id { return }
         storeActiveTrial()
         guard let trial = trials.first(where: { $0.id == id }) else { return }
+        cancelPreview(); previewLongEdge = 1000
+        preview = NSImage(cgImage: trial.thumbnail, size: .zero)
         art = trial.art; refinement = trial.refinement
         history = []; future = []; refinementHistory = []; refinementFuture = []; lastKey = ""
         activeTrialID = id; stage = .refine; revision += 1
@@ -571,11 +659,12 @@ final class Studio: ObservableObject {
         guard !chosen.isEmpty, !exportingTrials, !makingTrials else { return }
         let task = CancellableJob(); trialExportJob = task
         exportingTrials = true; trialExportProgress = 0; trialExportTotal = chosen.count
-        trialsQueue.async { [weak self] in
+        exportQueue.async { [weak self] in
             guard let self else { return }
             let formatter = DateFormatter(); formatter.dateFormat = "yyyy-MM-dd HH.mm.ss"
             let folder = parent.appendingPathComponent("Meld trials \(formatter.string(from: Date())) \(UUID().uuidString.prefix(6))", isDirectory: true)
-            let renderer = Renderer()
+            let renderer = self.exportRenderer
+            defer { renderer.context.clearCaches() }
             var completed = 0
             var exported: [Trial] = []
             do {
@@ -583,8 +672,9 @@ final class Studio: ObservableObject {
                 for trial in chosen {
                     if task.cancelled { break }
                     try autoreleasepool {
-                        guard let cg = renderer.render(trial.art, longEdge: 2400),
-                              let png = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:]) else { throw CocoaError(.fileWriteUnknown) }
+                        guard let cg = renderer.render(trial.art, longEdge: 2400) else { throw CocoaError(.fileWriteUnknown) }
+                        if task.cancelled { return }
+                        guard let png = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:]) else { throw CocoaError(.fileWriteUnknown) }
                         if task.cancelled { return }
                         try png.write(to: folder.appendingPathComponent("\(trial.title).png"), options: .withoutOverwriting)
                         var copy = trial
@@ -627,11 +717,15 @@ final class Studio: ObservableObject {
     func export(to url: URL) {
         guard !exporting else { return }
         exporting = true; let snapshot = art
-        queue.async { [weak self] in
+        exportQueue.async { [weak self] in
             guard let self else { return }
+            defer { self.exportRenderer.context.clearCaches() }
             do {
-                guard let cg = self.renderer.render(snapshot, longEdge: 2400), let data = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:]) else { throw CocoaError(.fileWriteUnknown) }
-                try data.write(to: url, options: .atomic)
+                try autoreleasepool {
+                    guard let cg = self.exportRenderer.render(snapshot, longEdge: 2400),
+                          let data = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:]) else { throw CocoaError(.fileWriteUnknown) }
+                    try data.write(to: url, options: .atomic)
+                }
                 DispatchQueue.main.async { self.exporting = false; self.status = "Exported \(url.lastPathComponent)" }
             } catch { DispatchQueue.main.async { self.exporting = false; self.error = "Couldn’t export: \(error.localizedDescription)" } }
         }

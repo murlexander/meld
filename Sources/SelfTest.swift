@@ -4,12 +4,13 @@ import ImageIO
 @MainActor
 enum SelfTest {
     static func run() {
+        setbuf(stdout, nil)
         let output = URL(fileURLWithPath: CommandLine.arguments.last ?? "/private/tmp/meld-checks", isDirectory: true)
         do {
             try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
             let renderer = Renderer()
             guard let sample = Renderer.starterPNG() else { fatalError("Starter generation failed") }
-            var art = Artwork(); art.layers = [Layer(name: "Colour study", material: .image, image: sample)]
+            var art = Artwork(); art.layers = [Layer(name: "Colour study", material: .image, image: SourceImage(data: sample))]
             func check(_ value: Bool, _ message: String) {
                 if !value { fputs("FAIL: \(message)\n", stderr); exit(1) }
                 print("PASS: \(message)")
@@ -196,8 +197,7 @@ enum SelfTest {
             let loader = MaterialLoader()
             check(loader.load(materials.appendingPathComponent("broken.CR3")) == nil, "corrupt RAW file is rejected")
             let reduced = loader.load(output.appendingPathComponent("preview.png"), maximum: 160)!
-            let smallSource = CGImageSourceCreateWithData(reduced.layer.image! as CFData, nil)!
-            let smallImage = CGImageSourceCreateImageAtIndex(smallSource, 0, nil)!
+            let smallImage = reduced.layer.image!.pixels
             check(max(smallImage.width, smallImage.height) == 160, "source images decode to bounded working copies")
             let orientationURL = output.appendingPathComponent("orientation.jpg")
             let orientationContext = Renderer.canvas(w: 80, h: 40)!
@@ -206,8 +206,7 @@ enum SelfTest {
             CGImageDestinationAddImage(destination, orientationContext.makeImage()!, [kCGImagePropertyOrientation: 6] as CFDictionary)
             check(CGImageDestinationFinalize(destination), "orientation fixture writes")
             let oriented = loader.load(orientationURL)!
-            let orientedSource = CGImageSourceCreateWithData(oriented.layer.image! as CFData, nil)!
-            let orientedImage = CGImageSourceCreateImageAtIndex(orientedSource, 0, nil)!
+            let orientedImage = oriented.layer.image!.pixels
             check(orientedImage.width == 40 && orientedImage.height == 80, "camera orientation is applied when importing")
             var originals: [URL: Data] = [:]
             for url in deep.urls { originals[url] = try Data(contentsOf: url) }
@@ -278,6 +277,7 @@ enum SelfTest {
                 check(renderer.render(rawStudio.art, longEdge: 320) != nil, "RAW-based experiment renders")
             }
             try TrialTests.run(output: output)
+            try PerformanceTests.run(output: output)
             let c = Renderer.canvas(w: 1024, h: 1024)!
             c.addPath(CGPath(roundedRect: CGRect(x: 35, y: 35, width: 954, height: 954), cornerWidth: 205, cornerHeight: 205, transform: nil)); c.clip()
             c.setFillColor(Ink(0.13,0.17,0.28).cg); c.fill(CGRect(x: 0, y: 0, width: 1024, height: 1024))

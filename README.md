@@ -17,7 +17,7 @@ The previews are the main workspace. Layer and detailed canvas controls are avai
 
 Export your picks before generating a new set or closing the app. Sessions are temporary; the last source folder is remembered without scanning at startup.
 
-The generator explores Flow, Vortex, Blocks, Collage, Weave, and mirrored Tiles, using colours sampled from the source images. RAW files use macOS's decoder, with embedded previews as a fallback when available.
+The generator explores Flow, Vortex, Blocks, Collage, Weave, and mirrored Tiles, using colours sampled from the source images. It starts showing previews while gathering the remaining material. RAW files use macOS's decoder; smaller working previews speed up exploration while developed images are retained for export. Embedded camera previews are a fallback when native development is unavailable.
 
 The interface uses native macOS controls, Liquid Glass on macOS 26+, and a restrained teal accent. Image processing runs locally; original source files are not modified.
 

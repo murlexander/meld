@@ -16,7 +16,7 @@ struct LoadedMaterial {
 final class MaterialLoader {
     static let rawExtensions: Set<String> = ["raw", "dng", "nef", "nrw", "arw", "srf", "sr2", "cr2", "cr3", "crw", "raf", "orf", "rw2", "rwl", "pef", "ptx", "srw", "3fr", "fff", "iiq", "kdc", "dcr", "erf", "mos", "mrw", "mef", "x3f"]
     static let photoExtensions: Set<String> = ["png", "jpg", "jpeg", "jpe", "tif", "tiff", "heic", "heif", "hif", "gif", "bmp", "webp", "avif", "jp2", "jxl"]
-    private let context = CIContext(options: [.cacheIntermediates: false])
+    private let context = CIContext(options: [.cacheIntermediates: false, .memoryTarget: 128])
     static func isCandidate(_ url: URL, type: UTType?) -> Bool {
         rawExtensions.contains(url.pathExtension.lowercased()) || photoExtensions.contains(url.pathExtension.lowercased()) || type?.conforms(to: .image) == true
     }
@@ -51,7 +51,8 @@ final class MaterialLoader {
         result.urls.sort { $0.path < $1.path }
         return result
     }
-    func load(_ url: URL, maximum: Int = 3200) -> LoadedMaterial? {
+    func load(_ url: URL, maximum: Int = 3200, cancelled: () -> Bool = { false }) -> LoadedMaterial? {
+        guard !cancelled() else { return nil }
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary)
@@ -68,6 +69,7 @@ final class MaterialLoader {
                 cg = raster(preview, maximum: maximum); usedPreview = cg != nil
             }
         }
+        guard !cancelled() else { return nil }
         if cg == nil, let source {
             var options: [CFString: Any] = [kCGImageSourceThumbnailMaxPixelSize: maximum,
                 kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceShouldCacheImmediately: true]
@@ -76,8 +78,8 @@ final class MaterialLoader {
             cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
             usedPreview = isRaw && cg != nil
         }
-        guard let cg, let png = Renderer.normalizedPNG(cg, maximum: maximum) else { return nil }
-        var layer = Layer(name: url.deletingPathExtension().lastPathComponent + (isRaw ? (usedPreview ? " (RAW preview)" : " (RAW)") : ""), material: .image, image: png)
+        guard !cancelled(), let cg else { return nil }
+        var layer = Layer(name: url.deletingPathExtension().lastPathComponent + (isRaw ? (usedPreview ? " (RAW preview)" : " (RAW)") : ""), material: .image, image: SourceImage(cg))
         layer.sourcePath = url.path
         return LoadedMaterial(layer: layer, usedRawPreview: usedPreview)
     }
@@ -85,6 +87,6 @@ final class MaterialLoader {
         guard !image.extent.isEmpty, !image.extent.isInfinite else { return nil }
         let scale = min(1, CGFloat(maximum) / max(image.extent.width, image.extent.height))
         let small = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-        return context.createCGImage(small, from: small.extent, format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+        return context.createCGImage(small, from: small.extent, format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB), deferred: false)
     }
 }

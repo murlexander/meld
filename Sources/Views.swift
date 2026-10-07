@@ -211,12 +211,8 @@ struct RefinementView: View {
 
         }
     }
-    @ViewBuilder func thumbnail(_ layer: Layer) -> some View {
-        if let data = layer.image, let image = NSImage(data: data) {
-            Image(nsImage: image).resizable().scaledToFill()
-        } else if let image = Renderer.pattern(layer, w: 80, h: 80) {
-            Image(decorative: image, scale: 1).resizable().scaledToFill()
-        } else { Rectangle().fill(layer.ink.color) }
+    func thumbnail(_ layer: Layer) -> some View {
+        LayerThumbnail(layer: layer).equatable()
     }
     var canvas: some View {
         ZoomCanvas(ratio: studio.art.ratio, tint: accent, resolutionChanged: studio.setMagnifiedPreview) { size in
@@ -374,5 +370,21 @@ struct StudioButtons: ViewModifier {
             if prominent { content.buttonStyle(.borderedProminent) }
             else { content.buttonStyle(.bordered).tint(nil) }
         }
+    }
+}
+
+// Geometry, opacity and selection changes do not rebuild sidebar image thumbnails.
+private struct LayerThumbnail: View, Equatable {
+    let layer: Layer
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.layer.image == rhs.layer.image && lhs.layer.material == rhs.layer.material &&
+        lhs.layer.frequency == rhs.layer.frequency && lhs.layer.ink == rhs.layer.ink && lhs.layer.paper == rhs.layer.paper
+    }
+    var body: some View {
+        if let image = layer.image?.thumbnail {
+            Image(decorative: image, scale: 1).resizable().scaledToFill()
+        } else if let image = Renderer.pattern(layer, w: 80, h: 80) {
+            Image(decorative: image, scale: 1).resizable().scaledToFill()
+        } else { Rectangle().fill(layer.ink.color) }
     }
 }

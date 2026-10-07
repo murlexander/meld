@@ -62,12 +62,9 @@ struct PreparedMaterial {
 }
 
 enum SourcePalette {
-    static func colours(_ data: Data?) -> [Ink] {
+    static func colours(_ source: SourceImage?) -> [Ink] {
         let fallback = [Ink(0.12, 0.2, 0.27), Ink(0.7, 0.4, 0.25), Ink(0.9, 0.85, 0.73)]
-        guard let data, let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceThumbnailMaxPixelSize: 24] as CFDictionary),
+        guard let image = source?.thumbnail,
               let context = Renderer.canvas(w: 24, h: 24),
               let pixels = context.data?.assumingMemoryBound(to: UInt8.self) else { return fallback }
         context.setFillColor(Ink(0.94, 0.92, 0.87).cg)
