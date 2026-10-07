@@ -1,6 +1,7 @@
 import AppKit
 import ImageIO
 
+@MainActor
 enum SelfTest {
     static func run() {
         let output = URL(fileURLWithPath: CommandLine.arguments.last ?? "/private/tmp/meld-checks", isDirectory: true)
@@ -47,8 +48,9 @@ enum SelfTest {
             let beforeZoom = resetStudio.art, zoomRevision = resetStudio.revision
             resetStudio.setMagnifiedPreview(true)
             waitFor { !resetStudio.rendering }
-            let magnifiedRep = resetStudio.preview?.cgImage(forProposedRect: nil, context: nil, hints: nil)
-            check(magnifiedRep?.width == 2400, "magnified preview renders at full export resolution")
+            // cgImage(forProposedRect:) can resample an NSImage for the current Retina display.
+            // The size of the CGImage-backed preview is independent of that display conversion.
+            check(resetStudio.preview?.size.width == 2400, "magnified preview renders at full export resolution")
             resetStudio.setMagnifiedPreview(false)
             waitFor { !resetStudio.rendering }
             check(resetStudio.art == beforeZoom && resetStudio.revision == zoomRevision,
@@ -275,6 +277,7 @@ enum SelfTest {
                 check(rawStudio.art.layers.filter { $0.material == .image }.count == 1 && rawStudio.error == nil, "Surprise me works in a RAW-only folder")
                 check(renderer.render(rawStudio.art, longEdge: 320) != nil, "RAW-based experiment renders")
             }
+            try TrialTests.run(output: output)
             let c = Renderer.canvas(w: 1024, h: 1024)!
             c.addPath(CGPath(roundedRect: CGRect(x: 35, y: 35, width: 954, height: 954), cornerWidth: 205, cornerHeight: 205, transform: nil)); c.clip()
             c.setFillColor(Ink(0.13,0.17,0.28).cg); c.fill(CGRect(x: 0, y: 0, width: 1024, height: 1024))

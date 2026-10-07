@@ -1,6 +1,6 @@
 # Meld
 
-Meld is a small native macOS playground for creating images that can become starting points for paintings. Combine photographs and patterns, adjust blends and distortions, and export the results as PNGs.
+Meld is a small native macOS playground that turns a folder of photographs and textures into unexpected patterns and painting references. Generate a set, refine the promising images, and export your picks as PNGs.
 
 This is an experimental side development adjacent to [Louppe](https://github.com/murlexander/louppe-media-culler). For now, Meld is a standalone, one-session image creator: there are no saved projects or continuing workspaces.
 
@@ -8,12 +8,16 @@ Future updates may bring Meld and Louppe together within a broader archive for a
 
 ## Current workflow
 
-- Add photographs from the Layers panel or drop them onto the canvas.
-- Drag layers to reorder them; right-click to duplicate or remove a layer.
-- Mix a source folder with **Surprise me**. Subfolders are always included.
-- Adjust layers and canvas effects in the permanently visible controls panel. Double-click a slider to reset its default.
-- Compare before distortions from the toolbar, and use **Fit · zoom · %** below the canvas.
-- Export a PNG at 2400 pixels on its longest side. Undo and redo work within the current session.
+1. Choose a source folder and a square, portrait, or landscape format.
+2. **Generate 36 previews** (⌘R). Each set explores six styles, with RAW files and subfolders included.
+3. Click a promising preview to refine it. Adjust distortion, pattern amount, colour, and contrast; star it as a pick.
+4. Return to **Previews**. Your edits stay with each image. **Export picks** writes 2400-pixel PNGs and a contact sheet of the adjusted results.
+
+The previews are the main workspace. Layer and detailed canvas controls are available under **More controls** when needed. Compare with the generated original or reset a preview; undo/redo applies to its adjustments.
+
+Export your picks before generating a new set or closing the app. Sessions are temporary; the last source folder is remembered without scanning at startup.
+
+The generator explores Flow, Vortex, Blocks, Collage, Weave, and mirrored Tiles, using colours sampled from the source images. RAW files use macOS's decoder, with embedded previews as a fallback when available.
 
 The interface uses native macOS controls, Liquid Glass on macOS 26+, and a restrained teal accent. Image processing runs locally; original source files are not modified.
 

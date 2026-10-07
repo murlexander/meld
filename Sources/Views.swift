@@ -6,44 +6,52 @@ private let accent = Color(nsColor: NSColor(name: nil) { appearance in
         ? NSColor(srgbRed: 0.28, green: 0.65, blue: 0.62, alpha: 1)
         : NSColor(srgbRed: 0.16, green: 0.49, blue: 0.47, alpha: 1)
 })
-private let panel = Color(nsColor: .controlBackgroundColor)
 // Explicit alias avoids the SDK's new State macro with command-line toolchains.
 private typealias ViewState<Value> = SwiftUI.State<Value>
 
 struct StudioView: View {
     @ObservedObject var studio: Studio
+    var body: some View {
+        Group {
+            switch studio.stage {
+            case .material: MaterialView(studio: studio)
+            case .previews: TrialsView(studio: studio)
+            case .refine: RefinementView(studio: studio).id(studio.activeTrialID)
+            }
+        }.frame(minWidth: 1050, minHeight: 700)
+            .tint(accent).accentColor(accent)
+            .alert("Meld", isPresented: Binding(get: { studio.error != nil }, set: { if !$0 { studio.error = nil } })) {
+                Button("OK") { studio.error = nil }
+            } message: { Text(studio.error ?? "") }
+    }
+}
+
+struct RefinementView: View {
+    @ObservedObject var studio: Studio
     private enum Panel: String { case layers, adjust }
     @ViewState private var activePanel: Panel = .adjust
+    @ViewState private var inspectorVisible = true
+    @ViewState private var detailed = false
+    @ViewState private var columns: NavigationSplitViewVisibility = .detailOnly
     @ViewState private var dropTarget = false
     @ViewState private var statusHint: String?
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columns) {
             sidebar.navigationSplitViewColumnWidth(min: 235, ideal: 250, max: 290)
         } detail: {
-            HStack(spacing: 0) {
-                canvas.frame(maxWidth: .infinity, maxHeight: .infinity)
-                Divider()
-                VStack(spacing: 0) {
-                    Picker("Controls", selection: $activePanel) {
-                        Text("Layer").tag(Panel.layers)
-                        Text("Canvas").tag(Panel.adjust)
-                    }.pickerStyle(.segmented).labelsHidden().controlSize(.large).padding(16)
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 16) {
-                            if activePanel == .layers { layerControls } else { warpControls }
-                        }.font(.system(size: 13)).controlSize(.regular).padding(.horizontal, 18).padding(.bottom, 18)
-                    }
-                }.frame(width: 280).background(.bar)
-            }
+            canvas.toolbar { toolbar }
         }
         .navigationSplitViewStyle(.balanced)
+        // Let the native sidebar and inspector own their full-height material.
+        // A writable binding also tracks collapse by dragging the divider.
+        .inspector(isPresented: $inspectorVisible) {
+            controls.inspectorColumnWidth(280)
+        }
         .frame(minWidth: 1050, minHeight: 700)
-        .navigationTitle("Meld")
+        .navigationTitle("")
         .tint(accent).accentColor(accent)
-        .toolbar { toolbar }
-        .alert("Meld", isPresented: Binding(get: { studio.error != nil }, set: { if !$0 { studio.error = nil } })) {
-            Button("OK") { studio.error = nil }
-        } message: { Text(studio.error ?? "") }
+        .toolbar(removing: .sidebarToggle)
+        .onChange(of: detailed) { _, expanded in columns = expanded ? .all : .detailOnly }
         .onChange(of: studio.selected) { _, _ in activePanel = .layers }
         .onChange(of: studio.surpriseRevision) { _, _ in activePanel = .adjust }
         .onChange(of: studio.status) { _, message in statusHint = message }
@@ -56,7 +64,51 @@ struct StudioView: View {
             studio.importImages([url])
         }
     }
+    private var controls: some View {
+        VStack(spacing: 0) {
+            if detailed {
+                HStack {
+                    Picker("Controls", selection: $activePanel) {
+                        Text("Layer").tag(Panel.layers); Text("Canvas").tag(Panel.adjust)
+                    }.pickerStyle(.segmented).labelsHidden().controlSize(.large)
+                }.padding(16)
+            } else {
+                HStack { Text("A few adjustments").font(.headline); Spacer() }.padding(18)
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    if detailed {
+                        if activePanel == .layers { layerControls } else { warpControls }
+                    } else {
+                        dial("Distortion", value: Binding(get: { studio.refinement.distortion }, set: { studio.setRefinement("distortion", value: $0) }),
+                             range: 0...1.75, defaultValue: 1, format: .percent)
+                        dial("Pattern amount", value: Binding(get: { studio.refinement.pattern }, set: { studio.setRefinement("pattern", value: $0) }),
+                             range: 0...1.5, defaultValue: 1, format: .percent)
+                        dial("Colour", value: warpValue(\.saturation, "saturation"), range: 0...2,
+                             defaultValue: studio.activeTrial?.original.warp.saturation ?? 1, format: .percent)
+                        dial("Contrast", value: warpValue(\.contrast, "contrast"), range: 0.5...1.5,
+                             defaultValue: studio.activeTrial?.original.warp.contrast ?? 1, format: .percent)
+                        Button("Reset preview") { studio.resetActiveTrial() }.modifier(StudioButtons())
+                    }
+                    Divider()
+                    Button(detailed ? "Simple controls" : "More controls…") { detailed.toggle() }
+                        .buttonStyle(.plain).foregroundStyle(.secondary)
+                }.font(.system(size: 13)).controlSize(.regular).padding(.horizontal, 18).padding(.bottom, 18)
+            }
+        }
+    }
+    // Keep panel recovery in the detail toolbar, outside the collapsible inspector.
     @ToolbarContentBuilder var toolbar: some ToolbarContent {
+        if #available(macOS 26.0, *) {
+            ToolbarItem(placement: .principal) { toolbarTitle }
+                .sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem(placement: .principal) { toolbarTitle }
+        }
+        ToolbarItem(placement: .navigation) {
+            Button { studio.showTrials() } label: { Label("Previews", systemImage: "chevron.left") }
+                .help("Return to all previews; adjustments stay with this one")
+        }
         ToolbarItemGroup {
             Button { studio.undo() } label: { Image(systemName: "arrow.uturn.backward") }
                 .disabled(!studio.canUndo).accessibilityLabel("Undo").help("Undo (⌘Z)")
@@ -64,14 +116,26 @@ struct StudioView: View {
                 .disabled(!studio.canRedo).accessibilityLabel("Redo").help("Redo (⇧⌘Z)")
         }
         if #available(macOS 26.0, *) { ToolbarSpacer(.fixed) }
-        ToolbarItem {
+        ToolbarItemGroup {
             Toggle(isOn: Binding(get: { studio.comparing }, set: { studio.comparing = $0; studio.schedule() })) {
                 Image(systemName: "square.lefthalf.filled")
             }
-            .toggleStyle(.button).accessibilityLabel("Before distortions")
-            .help(studio.comparing ? "Show distortions" : "Before distortions")
+            .toggleStyle(.button).accessibilityLabel("Original preview")
+            .help(studio.comparing ? "Show adjustments" : "Compare with the generated preview")
+            Toggle(isOn: $inspectorVisible) {
+                Image(systemName: "sidebar.right")
+            }
+            .toggleStyle(.button)
+            .accessibilityLabel(inspectorVisible ? "Hide controls" : "Show controls")
+            .help(inspectorVisible ? "Hide controls" : "Show controls")
         }
         if #available(macOS 26.0, *) { ToolbarSpacer(.fixed) }
+        ToolbarItem {
+            Button {
+                if let id = studio.activeTrialID { studio.toggleFavourite(id) }
+            } label: { Image(systemName: studio.activeTrialID.map { studio.favouriteTrials.contains($0) } == true ? "star.fill" : "star") }
+                .accessibilityLabel("Pick this preview").help("Include this preview when exporting picks")
+        }
         ToolbarItem {
             Button { studio.export() } label: {
                 Image(systemName: "square.and.arrow.up").offset(y: -1)
@@ -79,6 +143,9 @@ struct StudioView: View {
             .buttonStyle(.borderedProminent).buttonBorderShape(.circle).tint(accent)
             .disabled(studio.exporting).accessibilityLabel("Export PNG").help("Export PNG (⌘E)")
         }
+    }
+    private var toolbarTitle: some View {
+        Text(studio.activeTrial?.title ?? "Meld").font(.subheadline).foregroundStyle(.secondary)
     }
     var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -88,11 +155,9 @@ struct StudioView: View {
                 Text("\(studio.art.layers.count)").foregroundStyle(.secondary)
                 Button { studio.importPanel() } label: { Image(systemName: "photo.badge.plus") }
                     .modifier(StudioButtons()).controlSize(.large)
-                    .accessibilityLabel("Add images").help("Add images (⌘I)")
+                    .accessibilityLabel("Add images").keyboardShortcut("i").help("Add images (⌘I)")
             }.padding(.horizontal, 16).padding(.vertical, 14)
             layers
-            Divider()
-            sourceControls.padding(16)
             Divider()
             VStack(alignment: .leading, spacing: 12) {
                 Text("Add a pattern").font(.headline)
@@ -106,33 +171,8 @@ struct StudioView: View {
                         }
                     }
                 }.modifier(StudioButtons()).controlSize(.large)
-                Button { studio.randomize(); activePanel = .adjust } label: {
-                    Label(studio.gathering ? "Mixing…" : "Surprise me", systemImage: "shuffle")
-                        .font(.system(size: 14, weight: .semibold)).frame(maxWidth: .infinity, minHeight: 30)
-                }.modifier(StudioButtons(prominent: true)).controlSize(.large)
-                    .disabled(studio.materialsBusy).keyboardShortcut("r").help("Make another mix (⌘R)")
             }.padding(16)
         }.font(.system(size: 13))
-    }
-    var sourceControls: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Source material").font(.headline)
-            Button { studio.chooseSourceFolder() } label: {
-                Label(studio.sourceFolder?.lastPathComponent ?? "Choose folder…", systemImage: "folder")
-                    .lineLimit(1).truncationMode(.middle).frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
-            }.modifier(StudioButtons()).controlSize(.large).help(studio.sourceFolder?.path ?? "Choose material for Surprise me")
-            if studio.sourceFolder != nil {
-                HStack {
-                    Text(studio.sourceMessage).font(.caption).foregroundStyle(.secondary)
-                    Spacer(minLength: 0)
-                    Menu {
-                        Button("Rescan folder") { studio.refreshSource() }.disabled(studio.materialsBusy)
-                        Button("Disconnect folder") { studio.clearSourceFolder() }
-                    } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).frame(width: 24)
-                        .help("Source folder options").accessibilityLabel("Source folder options")
-                }
-            }
-        }
     }
     var layers: some View {
         VStack(spacing: 0) {
@@ -198,7 +238,7 @@ struct StudioView: View {
                     .background(.white).shadow(color: .black.opacity(0.10), radius: 8, y: 3)
                     .contentShape(Rectangle())
                     .gesture(DragGesture(minimumDistance: 0).onChanged { value in
-                        guard activePanel == .adjust, !studio.comparing else { return }
+                        guard detailed, activePanel == .adjust, !studio.comparing else { return }
                         studio.change("warp-center") { a in
                             a.warp.centerX = min(1, max(0, value.location.x / w))
                             a.warp.centerY = min(1, max(0, value.location.y / h))
@@ -210,7 +250,7 @@ struct StudioView: View {
             if studio.materialsBusy || studio.rendering || studio.exporting || studio.comparing || statusHint != nil {
                 HStack(spacing: 6) {
                     if studio.materialsBusy || studio.rendering || studio.exporting { ProgressView().controlSize(.mini) }
-                    Text(studio.comparing ? "Before distortions" : studio.gathering ? "Mixing…" : studio.importing ? "Adding images…" : studio.exporting ? "Exporting…" : studio.sourceScanning ? "Looking for images…" : studio.rendering ? "Updating…" : statusHint ?? "")
+                    Text(studio.comparing ? "Original preview" : studio.gathering ? "Mixing…" : studio.importing ? "Adding images…" : studio.exporting ? "Exporting…" : studio.sourceScanning ? "Looking for images…" : studio.rendering ? "Updating…" : statusHint ?? "")
                 }.font(.caption).lineLimit(2).padding(.horizontal, 10).padding(.vertical, 6)
                     .background(.regularMaterial, in: Capsule()).padding(8).padding(.bottom, 48).allowsHitTesting(false)
             }
@@ -258,7 +298,12 @@ struct StudioView: View {
                     dial("Rotate", value: layerValue(\.rotation, "rotation"), range: -180...180, defaultValue: 0, format: .degrees)
                     dial("Horizontal", value: layerValue(\.x, "x"), range: -0.75...0.75, defaultValue: 0, format: .percent)
                     dial("Vertical", value: layerValue(\.y, "y"), range: -0.75...0.75, defaultValue: 0, format: .percent)
-                    Button("Reset placement") { studio.updateLayer("reset") { $0.scale = 1; $0.rotation = 0; $0.x = 0; $0.y = 0 } }.font(.system(size: 13))
+                    if layer.material == .image {
+                        Stepper("Mirrored tiles: \(layer.tiles == 1 ? "Off" : String(layer.tiles))", value: Binding(
+                            get: { studio.current?.tiles ?? 1 },
+                            set: { value in studio.updateLayer("tiles") { $0.tiles = value } }), in: 1...8)
+                    }
+                    Button("Reset placement") { studio.updateLayer("reset") { $0.scale = 1; $0.rotation = 0; $0.x = 0; $0.y = 0; $0.tiles = 1 } }.font(.system(size: 13))
                 }.padding(.top, 10)
             }
         } else {
@@ -317,7 +362,7 @@ struct StudioView: View {
 }
 
 // Native glass controls on current macOS; ordinary native buttons on older systems.
-private struct StudioButtons: ViewModifier {
+struct StudioButtons: ViewModifier {
     var prominent = false
     @ViewBuilder func body(content: Content) -> some View {
         if #available(macOS 26.0, *) {

@@ -40,6 +40,7 @@ struct Layer: Identifiable, Equatable {
     var x = 0.0
     var y = 0.0
     var frequency = 12.0
+    var tiles = 1 // Mirrored image repeats; 1 keeps the original photograph.
     var ink = Ink(0.17, 0.23, 0.38)
     var paper = Ink(0.95, 0.76, 0.42)
 }
@@ -79,17 +80,36 @@ final class Studio: ObservableObject {
     @Published private(set) var surpriseRevision = 0
     @Published private(set) var importing = false
     @Published private(set) var sourceMessage = "Choose a folder for Surprise me."
+    @Published private(set) var trials: [Trial] = []
+    @Published private(set) var trialsFolder: URL?
+    @Published var favouriteTrials: Set<UUID> = []
+    @Published private(set) var stage = SessionStage.material
+    @Published private(set) var activeTrialID: UUID?
+    @Published var batchAspect = "Square"
+    @Published private(set) var refinement = Refinement()
+    @Published private(set) var makingTrials = false
+    @Published private(set) var trialProgress = 0
+    @Published private(set) var trialMessage = ""
+    @Published private(set) var exportingTrials = false
+    @Published private(set) var trialExportProgress = 0
+    @Published private(set) var trialExportTotal = 0
+    private let trialsQueue = DispatchQueue(label: "Meld.trials", qos: .userInitiated)
+    private var trialJob = CancellableJob()
+    private var trialExportJob = CancellableJob()
     private let materialsQueue = DispatchQueue(label: "Meld.materials", qos: .userInitiated)
     private let materialLoader = MaterialLoader()
     private var scanToken = UUID()
     private var surpriseToken = UUID()
     private var lastMaterials: Set<URL> = []
+    private var lastStyle: CompositionStyle?
     private var pendingImports = 0
     private let restoreSource: Bool
     private var history: [Artwork] = []
     private var future: [Artwork] = []
     private var lastKey = ""
     private var lastChange = Date.distantPast
+    private var refinementHistory: [Refinement] = []
+    private var refinementFuture: [Refinement] = []
     private var job: DispatchWorkItem?
     private let queue = DispatchQueue(label: "Meld.render", qos: .userInitiated)
     private var generation = 0
@@ -98,9 +118,9 @@ final class Studio: ObservableObject {
     var canUndo: Bool { !history.isEmpty }
     var canRedo: Bool { !future.isEmpty }
 
-    init(restoreSource: Bool = true) {
+    init(restoreSource: Bool = true, starter: Bool = true) {
         self.restoreSource = restoreSource
-        loadStarter(record: false)
+        if starter { loadStarter(record: false) }
         if restoreSource {
             UserDefaults.standard.removeObject(forKey: "source.recursive")
             var stale = false
@@ -117,7 +137,7 @@ final class Studio: ObservableObject {
         NSApp.activate(ignoringOtherApps: true)
         let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false; panel.prompt = "Use this folder"
-        panel.message = "Choose photos, RAW files, or textures for Surprise me"
+        panel.message = "Choose photos, RAW files, or textures for your previews"
         panel.directoryURL = sourceFolder
         if let window = NSApp.keyWindow {
             panel.beginSheetModal(for: window) { [weak self] result in
@@ -126,8 +146,10 @@ final class Studio: ObservableObject {
         } else if panel.runModal() == .OK, let url = panel.url { setSourceFolder(url) }
     }
     func setSourceFolder(_ url: URL, scan: Bool = true) {
+        storeActiveTrial(); activeTrialID = nil; stage = .material
+        cancelTrials()
         scanToken = UUID(); sourceScanning = false
-        surpriseToken = UUID(); gathering = false; lastMaterials = []
+        surpriseToken = UUID(); gathering = false; lastMaterials = []; lastStyle = nil
         sourceFolder = url; sourceCount = 0
         if restoreSource {
             UserDefaults.standard.set(url.path, forKey: "source.path")
@@ -136,9 +158,10 @@ final class Studio: ObservableObject {
             }
         }
         if scan { refreshSource() }
-        else { sourceMessage = "Ready for the next mix." }
+        else { sourceMessage = "Subfolders and RAW files are included." }
     }
     func clearSourceFolder() {
+        cancelTrials()
         scanToken = UUID(); surpriseToken = UUID(); sourceScanning = false; gathering = false
         sourceFolder = nil; sourceCount = 0; lastMaterials = []; sourceMessage = "Choose a folder for Surprise me."
         if restoreSource {
@@ -171,9 +194,10 @@ final class Studio: ObservableObject {
         guard art != old else { return }
         if key != lastKey || Date().timeIntervalSince(lastChange) > 0.45 {
             history.append(old)
-            if history.count > 50 { history.removeFirst() }
+            refinementHistory.append(refinement)
+            if history.count > 50 { history.removeFirst(); refinementHistory.removeFirst() }
         }
-        lastKey = key; lastChange = Date(); future.removeAll()
+        lastKey = key; lastChange = Date(); future.removeAll(); refinementFuture.removeAll()
         revision += 1; schedule()
     }
     func updateLayer(_ key: String, _ body: (inout Layer) -> Void) {
@@ -184,11 +208,13 @@ final class Studio: ObservableObject {
     }
     func undo() {
         guard let previous = history.popLast() else { return }
-        future.append(art); art = previous; finishHistory()
+        future.append(art); refinementFuture.append(refinement)
+        art = previous; refinement = refinementHistory.popLast() ?? Refinement(); finishHistory()
     }
     func redo() {
         guard let next = future.popLast() else { return }
-        history.append(art); art = next; finishHistory()
+        history.append(art); refinementHistory.append(refinement)
+        art = next; refinement = refinementFuture.popLast() ?? Refinement(); finishHistory()
     }
     private func finishHistory() {
         lastKey = ""; revision += 1
@@ -268,7 +294,9 @@ final class Studio: ObservableObject {
     }
     func schedule() {
         job?.cancel(); generation += 1
-        let token = generation; let snapshot = art; let raw = comparing; let edge = previewLongEdge
+        let token = generation
+        let snapshot = comparing ? activeTrial?.original ?? art : art
+        let raw = comparing && activeTrialID == nil; let edge = previewLongEdge
         rendering = true
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
@@ -299,18 +327,25 @@ final class Studio: ObservableObject {
         status = "Another possibility. Undo takes you back."
     }
     private static func shuffleEffects(_ a: inout Artwork) {
-            a.warp.wave = Double.random(in: 0...0.5); a.warp.twist = Double.random(in: -2.2...2.2)
-            a.warp.bulge = Double.random(in: -0.5...0.6); a.warp.wavelength = Double.random(in: 1.5...7)
-            a.warp.centerX = Double.random(in: 0.25...0.75); a.warp.centerY = Double.random(in: 0.25...0.75)
-            for i in a.layers.indices where a.layers[i].material != .image {
-                a.layers[i].rotation = Double.random(in: -90...90)
-                a.layers[i].frequency = Double.random(in: 5...28)
-                a.layers[i].opacity = Double.random(in: 0.2...0.7)
-            }
+        a.warp = Warp()
+        switch Int.random(in: 0...3) {
+        case 0: a.warp.wave = Double.random(in: 0.17...0.4); a.warp.wavelength = Double.random(in: 1.4...4.5)
+        case 1: a.warp.twist = [-1.0, 1.0].randomElement()! * Double.random(in: 1.2...2.7); a.warp.bulge = Double.random(in: -0.2...0.35)
+        case 2: a.warp.pixel = Double.random(in: 0.35...0.9)
+        default: a.warp.wave = Double.random(in: 0.02...0.08); a.warp.contrast = Double.random(in: 0.85...1.15)
+        }
+        a.warp.saturation = Double.random(in: 0.8...1.25)
+        a.warp.centerX = Double.random(in: 0.25...0.75); a.warp.centerY = Double.random(in: 0.25...0.75)
+        for i in a.layers.indices where a.layers[i].material != .image {
+            a.layers[i].rotation = Double.random(in: -90...90)
+            a.layers[i].frequency = Double.random(in: 5...28)
+            a.layers[i].opacity = Double.random(in: 0.2...0.7)
+        }
     }
     private func surpriseFromFolder(_ folder: URL) {
         gathering = true; surpriseToken = UUID()
         let token = surpriseToken; let startingRevision = revision; let previous = lastMaterials
+        let style = CompositionStyle.allCases.filter { $0 != lastStyle }.randomElement()!
         let snapshot = art
         status = "Gathering material…"
         materialsQueue.async { [weak self] in
@@ -329,24 +364,8 @@ final class Studio: ObservableObject {
                         else { failed += 1 }
                     }
                 }
-                var composition = snapshot
-                composition.layers = loaded.map(\.layer)
-                for i in composition.layers.indices {
-                    composition.layers[i].scale = Double.random(in: 1.05...1.55)
-                    composition.layers[i].rotation = Double.random(in: -35...35)
-                    composition.layers[i].x = Double.random(in: -0.16...0.16)
-                    composition.layers[i].y = Double.random(in: -0.16...0.16)
-                    if i > 0 {
-                        composition.layers[i].opacity = Double.random(in: 0.3...0.7)
-                        composition.layers[i].blend = [Blend.multiply, .screen, .overlay, .softLight, .difference].randomElement()!
-                    }
-                }
-                let pattern = [Material.stripes, .dots, .checker, .rings, .noise].randomElement()!
-                composition.layers.append(Layer(name: pattern.label, material: pattern, opacity: Double.random(in: 0.12...0.35), blend: .softLight,
-                    rotation: Double.random(in: -90...90), frequency: Double.random(in: 5...24),
-                    ink: Ink(Double.random(in: 0.1...0.5), Double.random(in: 0.1...0.5), Double.random(in: 0.1...0.5)),
-                    paper: Ink(Double.random(in: 0.6...1), Double.random(in: 0.6...1), Double.random(in: 0.6...1))))
-                composition.warp = Warp(); Self.shuffleEffects(&composition)
+                let composition = TrialGenerator.compose(loaded.map { PreparedMaterial($0.layer) },
+                    style: style, aspect: snapshot.aspect, seed: UInt64.random(in: 0...UInt64.max))
                 DispatchQueue.main.async {
                     guard self.surpriseToken == token else { return }
                     self.gathering = false; self.sourceCount = scan.urls.count
@@ -360,11 +379,12 @@ final class Studio: ObservableObject {
                         return
                     }
                     self.lastMaterials = used
+                    self.lastStyle = style
                     self.change("surprise-\(UUID())") { $0 = composition }
-                    self.selected = composition.layers.first?.id
+                    self.selected = composition.layers.first(where: { $0.material == .image })?.id
                     // Comparing should not accidentally conceal the new effects.
                     if self.comparing { self.comparing = false; self.schedule() }
-                    self.status = "Mixed \(loaded.count) source image\(loaded.count == 1 ? "" : "s"). Undo takes you back."
+                    self.status = "\(style.rawValue) · \(loaded.count) source image\(loaded.count == 1 ? "" : "s"). Undo takes you back."
                     if failed > 0 { self.status += " Skipped \(failed) unreadable." }
                     self.surpriseRevision += 1
                 }
@@ -388,6 +408,215 @@ final class Studio: ObservableObject {
             }
         }
     }
+    func showTrials() {
+        storeActiveTrial(); activeTrialID = nil
+        stage = trials.isEmpty && !makingTrials ? .material : .previews
+    }
+    func chooseMaterial() {
+        cancelTrials()
+        storeActiveTrial(); activeTrialID = nil; stage = .material
+    }
+    func makeTrials(count: Int = 36) {
+        guard let folder = sourceFolder, !materialsBusy, !makingTrials, !exportingTrials else { return }
+        storeActiveTrial(); activeTrialID = nil; stage = .previews
+        // The interface offers one useful batch size. A bound also protects programmatic calls.
+        let count = min(48, max(1, count))
+        trialJob.cancel(); let task = CancellableJob(); trialJob = task
+        makingTrials = true; trialProgress = 0; trialMessage = "Gathering images…"
+        let aspect = batchAspect
+        let seed = UInt64.random(in: 0...UInt64.max)
+        trialsQueue.async { [weak self] in
+            guard let self else { return }
+            let loader = MaterialLoader(), renderer = Renderer()
+            do {
+                let scan = try MaterialLoader.scan(folder, cancelled: { task.cancelled })
+                let wanted = min(12, scan.urls.count)
+                var pool: [PreparedMaterial] = []; var skipped = 0
+                for url in scan.urls.shuffled().prefix(64) {
+                    if task.cancelled { return }
+                    if pool.count >= wanted { break }
+                    autoreleasepool {
+                        if let loaded = loader.load(url, maximum: 2400) { pool.append(PreparedMaterial(loaded.layer)) }
+                        else { skipped += 1 }
+                    }
+                    let loadedCount = pool.count
+                    DispatchQueue.main.async {
+                        guard self.trialJob === task, !task.cancelled else { return }
+                        self.trialMessage = "Gathering images · \(loadedCount) ready"
+                    }
+                }
+                guard !task.cancelled else { return }
+                guard !pool.isEmpty else {
+                    DispatchQueue.main.async {
+                        guard self.trialJob === task, !task.cancelled else { return }
+                        self.makingTrials = false
+                        self.sourceCount = scan.urls.count
+                        self.trialMessage = "No usable images found."
+                        self.error = scan.urls.isEmpty ? "No images found in this folder or its subfolders. Choose another folder." : "Couldn’t open the sampled images. Unsupported RAW files may need JPEG or TIFF copies."
+                    }
+                    return
+                }
+                let styles = TrialGenerator.styles(count: count, seed: seed)
+                let loadedCount = pool.count
+                var produced = 0
+                for (i, style) in styles.enumerated() {
+                    if task.cancelled { return }
+                    let trial: Trial? = autoreleasepool {
+                        let art = TrialGenerator.compose(pool, style: style, aspect: aspect, seed: seed &+ UInt64(i+1))
+                        guard let image = renderer.render(art, longEdge: 480) else { return nil }
+                        return Trial(number: i+1, style: style, art: art, thumbnail: image)
+                    }
+                    guard let trial else { continue }
+                    produced += 1; let first = produced == 1
+                    DispatchQueue.main.async {
+                        guard self.trialJob === task, !task.cancelled else { return }
+                        if first { self.trials = []; self.favouriteTrials = []; self.trialsFolder = folder }
+                        self.trials.append(trial); self.trialProgress = self.trials.count
+                        self.trialMessage = "Making previews · \(self.trials.count) of \(count)"
+                    }
+                }
+                DispatchQueue.main.async {
+                    guard self.trialJob === task, !task.cancelled else { return }
+                    self.makingTrials = false; self.sourceCount = scan.urls.count
+                    self.sourceMessage = "\(scan.urls.count) image files, including RAW"
+                    self.trialMessage = "\(produced) previews · \(loadedCount) source images"
+                    if skipped > 0 { self.trialMessage += " · \(skipped) unreadable skipped" }
+                    if scan.unreadableFolders > 0 { self.trialMessage += " · Some folders unavailable" }
+                    if produced == 0 { self.error = "The trials couldn’t render. Your previous trials and canvas are unchanged." }
+                    self.status = self.trialMessage
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    guard self.trialJob === task, !task.cancelled else { return }
+                    self.makingTrials = false; self.trialMessage = "Folder unavailable."
+                    self.error = "Couldn’t read the source folder. Choose it again or reconnect its drive."
+                }
+            }
+        }
+    }
+    func cancelTrials() {
+        guard makingTrials else { return }
+        trialJob.cancel(); makingTrials = false
+        trialMessage = trialProgress > 0 ? "Stopped at \(trials.count) previews" : "Generation stopped"
+    }
+    func toggleFavourite(_ id: UUID) {
+        if favouriteTrials.contains(id) { favouriteTrials.remove(id) }
+        else if trials.contains(where: { $0.id == id }) { favouriteTrials.insert(id) }
+    }
+    func openTrial(_ id: UUID) {
+        guard !makingTrials else { return }
+        if activeTrialID == id { return }
+        storeActiveTrial()
+        guard let trial = trials.first(where: { $0.id == id }) else { return }
+        art = trial.art; refinement = trial.refinement
+        history = []; future = []; refinementHistory = []; refinementFuture = []; lastKey = ""
+        activeTrialID = id; stage = .refine; revision += 1
+        selected = trial.art.layers.first(where: { $0.material == .image })?.id
+        comparing = false; schedule()
+        surpriseRevision += 1; status = trial.title
+    }
+    var activeTrial: Trial? { trials.first { $0.id == activeTrialID } }
+    func setRefinement(_ key: String, value: Double) {
+        guard let original = activeTrial?.original, value.isFinite, ["distortion", "pattern"].contains(key) else { return }
+        change(key) { artwork in
+            if key == "distortion" {
+                artwork.warp.wave = original.warp.wave * value
+                artwork.warp.twist = original.warp.twist * value
+                artwork.warp.bulge = min(0.9, max(-0.9, original.warp.bulge * value))
+                artwork.warp.pixel = min(1, original.warp.pixel * value)
+            } else {
+                for i in artwork.layers.indices where artwork.layers[i].material != .image {
+                    if let base = original.layers.first(where: { $0.id == artwork.layers[i].id }) {
+                        artwork.layers[i].opacity = min(1, base.opacity * value)
+                    }
+                }
+            }
+        }
+        if key == "distortion" { refinement.distortion = value } else { refinement.pattern = value }
+    }
+    func resetActiveTrial() {
+        guard let trial = activeTrial else { return }
+        change("reset-preview-\(UUID())") { $0 = trial.original }
+        refinement = Refinement()
+    }
+    func storeActiveTrial() {
+        guard let id = activeTrialID, let i = trials.firstIndex(where: { $0.id == id }) else { return }
+        let changed = trials[i].art != art
+        trials[i].art = art; trials[i].refinement = refinement
+        guard changed else { return }
+        let snapshot = art
+        queue.async { [weak self] in
+            guard let self else { return }
+            let image = autoreleasepool { self.renderer.render(snapshot, longEdge: 480) }
+            DispatchQueue.main.async {
+                guard let image, let index = self.trials.firstIndex(where: { $0.id == id }), self.trials[index].art == snapshot else { return }
+                self.trials[index].thumbnail = image
+            }
+        }
+    }
+    func exportTrials() {
+        storeActiveTrial()
+        let chosen = trials.filter { favouriteTrials.contains($0.id) }
+        guard !chosen.isEmpty, !exportingTrials, !makingTrials else { return }
+        let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true
+        panel.canCreateDirectories = true; panel.allowsMultipleSelection = false; panel.prompt = "Export picks"
+        panel.message = "Export \(chosen.count) PNGs and a contact sheet into a new folder"
+        if let window = NSApp.keyWindow ?? NSApp.mainWindow {
+            panel.beginSheetModal(for: window) { [weak self] response in
+                if response == .OK, let folder = panel.url { self?.exportTrials(chosen, to: folder) }
+            }
+        } else if panel.runModal() == .OK, let folder = panel.url { exportTrials(chosen, to: folder) }
+    }
+    func exportTrials(_ chosen: [Trial], to parent: URL) {
+        guard !chosen.isEmpty, !exportingTrials, !makingTrials else { return }
+        let task = CancellableJob(); trialExportJob = task
+        exportingTrials = true; trialExportProgress = 0; trialExportTotal = chosen.count
+        trialsQueue.async { [weak self] in
+            guard let self else { return }
+            let formatter = DateFormatter(); formatter.dateFormat = "yyyy-MM-dd HH.mm.ss"
+            let folder = parent.appendingPathComponent("Meld trials \(formatter.string(from: Date())) \(UUID().uuidString.prefix(6))", isDirectory: true)
+            let renderer = Renderer()
+            var completed = 0
+            var exported: [Trial] = []
+            do {
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+                for trial in chosen {
+                    if task.cancelled { break }
+                    try autoreleasepool {
+                        guard let cg = renderer.render(trial.art, longEdge: 2400),
+                              let png = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:]) else { throw CocoaError(.fileWriteUnknown) }
+                        if task.cancelled { return }
+                        try png.write(to: folder.appendingPathComponent("\(trial.title).png"), options: .withoutOverwriting)
+                        var copy = trial
+                        let scale = min(1, 480 / Double(max(cg.width, cg.height)))
+                        if let ctx = Renderer.canvas(w: max(1, Int(Double(cg.width) * scale)), h: max(1, Int(Double(cg.height) * scale))) {
+                            ctx.interpolationQuality = .high
+                            ctx.draw(cg, in: CGRect(x: 0, y: 0, width: ctx.width, height: ctx.height))
+                            if let thumbnail = ctx.makeImage() { copy.thumbnail = thumbnail }
+                        }
+                        exported.append(copy)
+                        completed += 1
+                    }
+                    let progress = completed
+                    DispatchQueue.main.async { self.trialExportProgress = progress }
+                }
+                if completed > 0, let contact = TrialGenerator.contactSheet(exported) {
+                    try contact.write(to: folder.appendingPathComponent("Contact sheet.png"), options: .withoutOverwriting)
+                }
+                DispatchQueue.main.async {
+                    self.exportingTrials = false
+                    self.status = "\(task.cancelled ? "Stopped export; saved" : "Exported") \(completed) trials in \(folder.lastPathComponent)"
+                    self.trialMessage = self.status
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.exportingTrials = false
+                    self.error = "Couldn’t finish exporting trials: \(error.localizedDescription). \(completed) PNGs were saved in \(folder.lastPathComponent)."
+                }
+            }
+        }
+    }
+    func cancelTrialExport() { trialExportJob.cancel() }
     func export() {
         NSApp.activate(ignoringOtherApps: true)
         let p = NSSavePanel(); p.allowedContentTypes = [.png]; p.nameFieldStringValue = "Meld.png"

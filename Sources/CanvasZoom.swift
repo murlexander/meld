@@ -38,27 +38,27 @@ struct ZoomCanvas<Content: View>: View {
     var body: some View {
         GeometryReader { geometry in
             let base = CanvasZoomGeometry.imageSize(ratio: ratio, displayScale: displayScale)
-            // Reserve only the compact control's height; artwork gets the remaining space.
-            let viewport = CGSize(width: geometry.size.width, height: max(1, geometry.size.height - 48))
+            // The canvas fills the space behind the floating zoom capsule.
+            let viewport = geometry.size
             let fitted = CanvasZoomGeometry.fit(image: base, viewport: viewport)
             let scale = manualScale ?? fitted
             let size = CGSize(width: base.width * scale, height: base.height * scale)
-            VStack(spacing: 0) {
-                ScrollView([.horizontal, .vertical]) {
-                    content(size)
-                        .frame(width: size.width, height: size.height)
-                        .padding(12)
-                        .frame(minWidth: viewport.width, minHeight: viewport.height)
-                }
-                .defaultScrollAnchor(.center)
-                .frame(height: viewport.height)
-                .simultaneousGesture(MagnifyGesture().onChanged { value in
-                    if pinchStart == nil { pinchStart = scale }
-                    manualScale = min(CanvasZoomGeometry.maximum,
-                                      max(CanvasZoomGeometry.minimum, (pinchStart ?? scale) * value.magnification))
-                }.onEnded { _ in pinchStart = nil })
+            ScrollView([.horizontal, .vertical]) {
+                content(size)
+                    .frame(width: size.width, height: size.height)
+                    .padding(12)
+                    .frame(minWidth: viewport.width, minHeight: viewport.height)
+            }
+            .defaultScrollAnchor(.center)
+            .frame(width: viewport.width, height: viewport.height)
+            .simultaneousGesture(MagnifyGesture().onChanged { value in
+                if pinchStart == nil { pinchStart = scale }
+                manualScale = min(CanvasZoomGeometry.maximum,
+                                  max(CanvasZoomGeometry.minimum, (pinchStart ?? scale) * value.magnification))
+            }.onEnded { _ in pinchStart = nil })
+            .overlay(alignment: .bottom) {
                 zoomControl(scale: scale)
-                    .frame(maxWidth: .infinity).frame(height: 48)
+                    .padding(.bottom, 8)
             }
         }
         .onChange(of: manualScale != nil) { _, manual in resolutionChanged(manual) }

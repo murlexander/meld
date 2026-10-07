@@ -20,7 +20,7 @@ final class MaterialLoader {
     static func isCandidate(_ url: URL, type: UTType?) -> Bool {
         rawExtensions.contains(url.pathExtension.lowercased()) || photoExtensions.contains(url.pathExtension.lowercased()) || type?.conforms(to: .image) == true
     }
-    static func scan(_ folder: URL) throws -> MaterialScan {
+    static func scan(_ folder: URL, cancelled: () -> Bool = { false }) throws -> MaterialScan {
         let fm = FileManager.default
         let root = try folder.resourceValues(forKeys: [.isDirectoryKey])
         guard root.isDirectory == true else { throw CocoaError(.fileReadNoSuchFile) }
@@ -30,6 +30,7 @@ final class MaterialLoader {
         // Walk one level at a time so skipping a symbolic link never interferes
         // with traversal of a neighbouring real directory.
         while let directory = directories.popLast() {
+            if cancelled() { throw CocoaError(.userCancelled) }
             let children: [URL]
             do { children = try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]) }
             catch {
@@ -37,6 +38,7 @@ final class MaterialLoader {
                 result.unreadableFolders += 1; continue
             }
             for url in children {
+                if cancelled() { throw CocoaError(.userCancelled) }
                 guard let values = try? url.resourceValues(forKeys: Set(keys)), values.isSymbolicLink != true else { continue }
                 if values.isDirectory == true {
                     if values.isPackage != true { directories.append(url) }

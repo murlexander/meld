@@ -15,7 +15,18 @@ final class Renderer {
             else if let cg = Self.pattern(layer, w: w, h: h) { source = CIImage(cgImage: cg) }
             guard var source else { continue }
             let extent = source.extent
-            let fit = max(CGFloat(w) / extent.width, CGFloat(h) / extent.height) * layer.scale
+            let repeats = layer.material == .image ? max(1, layer.tiles) : 1
+            let fit = max(CGFloat(w) / extent.width, CGFloat(h) / extent.height) * layer.scale / CGFloat(repeats)
+            if repeats > 1 {
+                // Reflect adjacent cells before tiling to join their edges cleanly.
+                let unit = source.transformed(by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY))
+                let horizontal = unit.transformed(by: CGAffineTransform(a: -1, b: 0, c: 0, d: 1, tx: extent.width * 2, ty: 0))
+                let vertical = unit.transformed(by: CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: extent.height * 2))
+                let diagonal = horizontal.transformed(by: CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: extent.height * 2))
+                source = unit.composited(over: horizontal).composited(over: vertical).composited(over: diagonal)
+                    .cropped(to: CGRect(x: 0, y: 0, width: extent.width * 2, height: extent.height * 2))
+                    .applyingFilter("CIAffineTile")
+            }
             let t = CGAffineTransform(translationX: CGFloat(w) * (0.5 + layer.x), y: CGFloat(h) * (0.5 - layer.y))
                 .rotated(by: layer.rotation * .pi / 180).scaledBy(x: fit, y: fit)
                 .translatedBy(x: -extent.midX, y: -extent.midY)
@@ -76,12 +87,13 @@ final class Renderer {
             }
         case .noise:
             var seed: UInt64 = 812367
-            let cell = max(1, Int(step / 8))
-            for y in stride(from: 0, to: h, by: cell) { for x in stride(from: 0, to: w, by: cell) {
+            // Keep the same logical noise cells at thumbnail, preview, and export sizes.
+            let cell = step / 8
+            for y in 0..<Int(ceil(Double(h) / cell)) { for x in 0..<Int(ceil(Double(w) / cell)) {
                 seed = seed &* 6364136223846793005 &+ 1
                 let v = Double((seed >> 33) % 1000) / 999
                 ctx.setFillColor(CGColor(red: l.paper.r * (1-v) + l.ink.r*v, green: l.paper.g*(1-v)+l.ink.g*v, blue: l.paper.b*(1-v)+l.ink.b*v, alpha: 1))
-                ctx.fill(CGRect(x: x, y: y, width: cell, height: cell))
+                ctx.fill(CGRect(x: Double(x) * cell, y: Double(y) * cell, width: cell, height: cell))
             }}
         case .image: break
         }
