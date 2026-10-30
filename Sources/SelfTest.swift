@@ -278,6 +278,7 @@ enum SelfTest {
             }
             try TrialTests.run(output: output)
             try PerformanceTests.run(output: output)
+            try PipelineTests.run(output: output)
             try FeatureTests.run(output: output)
             let c = Renderer.canvas(w: 1024, h: 1024)!
             c.addPath(CGPath(roundedRect: CGRect(x: 35, y: 35, width: 954, height: 954), cornerWidth: 205, cornerHeight: 205, transform: nil)); c.clip()

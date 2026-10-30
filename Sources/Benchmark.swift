@@ -19,7 +19,7 @@ enum Benchmark {
             while !condition() && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.002)) }
         }
         func ms(_ seconds: TimeInterval) -> String { String(format: "%.0f ms", seconds * 1000) }
-        var firsts: [TimeInterval] = [], alls: [TimeInterval] = [], exports: [TimeInterval] = [], opens: [TimeInterval] = []
+        var firsts: [TimeInterval] = [], alls: [TimeInterval] = [], exports: [TimeInterval] = [], opens: [TimeInterval] = [], varies: [TimeInterval] = []
         for run in 1...runs {
             let studio = Studio(restoreSource: false, starter: false)
             studio.setSourceFolder(folder, scan: false)
@@ -41,11 +41,16 @@ enum Benchmark {
             studio.exportTrials(picks, to: output)
             wait { !studio.exportingTrials }
             let export = Date().timeIntervalSince(exportStart)
-            firsts.append(first); alls.append(all); exports.append(export); opens.append(open)
-            print("run \(run): first \(ms(first)) · 36 previews \(ms(all)) · open \(ms(open)) · export 6 \(ms(export)) · \(studio.trialMessage)")
+            let varyStart = Date()
+            studio.makeVariations(of: studio.trials[0].id)
+            wait { !studio.makingTrials }
+            let vary = Date().timeIntervalSince(varyStart)
+            guard studio.trials.count == 48 else { fputs("FAIL: variations produced \(studio.trials.count - 36)\n", stderr); exit(1) }
+            firsts.append(first); alls.append(all); exports.append(export); opens.append(open); varies.append(vary)
+            print("run \(run): first \(ms(first)) · 36 previews \(ms(all)) · open \(ms(open)) · export 6 \(ms(export)) · 12 variations \(ms(vary))")
         }
         func median(_ v: [TimeInterval]) -> String { ms(v.sorted()[v.count / 2]) }
-        print("median: first \(median(firsts)) · 36 previews \(median(alls)) · open \(median(opens)) · export 6 \(median(exports))")
+        print("median: first \(median(firsts)) · 36 previews \(median(alls)) · open \(median(opens)) · export 6 \(median(exports)) · 12 variations \(median(varies))")
         try? FileManager.default.removeItem(at: output)
         exit(0)
     }

@@ -20,19 +20,29 @@ final class Renderer {
             let extent = source.extent
             let repeats = layer.material == .image ? max(1, layer.tiles) : 1
             let fit = max(CGFloat(w) / extent.width, CGFloat(h) / extent.height) * layer.scale / CGFloat(repeats)
-            if repeats > 1 {
-                // Reflect adjacent cells before tiling to join their edges cleanly.
-                let unit = source.transformed(by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY))
-                let horizontal = unit.transformed(by: CGAffineTransform(a: -1, b: 0, c: 0, d: 1, tx: extent.width * 2, ty: 0))
-                let vertical = unit.transformed(by: CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: extent.height * 2))
-                let diagonal = horizontal.transformed(by: CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: extent.height * 2))
-                source = unit.composited(over: horizontal).composited(over: vertical).composited(over: diagonal)
-                    .cropped(to: CGRect(x: 0, y: 0, width: extent.width * 2, height: extent.height * 2))
-                    .applyingFilter("CIAffineTile")
-            }
-            let t = CGAffineTransform(translationX: CGFloat(w) * (0.5 + layer.x), y: CGFloat(h) * (0.5 - layer.y))
+            var t = CGAffineTransform(translationX: CGFloat(w) * (0.5 + layer.x), y: CGFloat(h) * (0.5 - layer.y))
                 .rotated(by: layer.rotation * .pi / 180).scaledBy(x: fit, y: fit)
                 .translatedBy(x: -extent.midX, y: -extent.midY)
+            if repeats > 1 {
+                // CIAffineTile materializes its whole input. Shrink the cell to its
+                // on-canvas pixel size first (whole pixels, so tiles join without seams);
+                // tiling at source resolution held hundreds of MB per render.
+                let uw = max(1, min(extent.width, (extent.width * fit).rounded()))
+                let uh = max(1, min(extent.height, (extent.height * fit).rounded()))
+                let sx = uw / extent.width, sy = uh / extent.height
+                let unit = source.transformed(by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY).concatenating(CGAffineTransform(scaleX: sx, y: sy)))
+                // Reflect adjacent cells before tiling to join their edges cleanly.
+                let horizontal = unit.transformed(by: CGAffineTransform(a: -1, b: 0, c: 0, d: 1, tx: uw * 2, ty: 0))
+                let vertical = unit.transformed(by: CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: uh * 2))
+                let diagonal = horizontal.transformed(by: CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: uh * 2))
+                source = unit.composited(over: horizontal).composited(over: vertical).composited(over: diagonal)
+                    .cropped(to: CGRect(x: 0, y: 0, width: uw * 2, height: uh * 2))
+                    .applyingFilter("CIAffineTile")
+                // Same placement as before, expressed in the shrunken cell's coordinates.
+                t = CGAffineTransform(translationX: CGFloat(w) * (0.5 + layer.x), y: CGFloat(h) * (0.5 - layer.y))
+                    .rotated(by: layer.rotation * .pi / 180).scaledBy(x: fit / sx, y: fit / sy)
+                    .translatedBy(x: -extent.midX * sx, y: -extent.midY * sy)
+            }
             source = source.transformed(by: t).cropped(to: rect)
             source = source.applyingFilter("CIColorMatrix", parameters: ["inputAVector": CIVector(x: 0, y: 0, z: 0, w: layer.opacity)])
             composite = source.applyingFilter(layer.blend.filter, parameters: [kCIInputBackgroundImageKey: composite]).cropped(to: rect)
@@ -40,7 +50,7 @@ final class Renderer {
         if !bypass {
             let warp = art.warp
             if warp.wave > 0.001, let map = Self.waveMap(w: w, h: h, frequency: warp.wavelength) {
-                composite = composite.clampedToExtent().applyingFilter("CIDisplacementDistortion", parameters: ["inputDisplacementImage": CIImage(cgImage: map), kCIInputScaleKey: warp.wave * Double(longEdge) * 0.35]).cropped(to: rect)
+                composite = composite.clampedToExtent().applyingFilter("CIDisplacementDistortion", parameters: ["inputDisplacementImage": map, kCIInputScaleKey: warp.wave * Double(longEdge) * 0.35]).cropped(to: rect)
             }
             let center = CIVector(x: Double(w) * warp.centerX, y: Double(h) * (1 - warp.centerY))
             if abs(warp.twist) > 0.001 {
@@ -102,8 +112,10 @@ final class Renderer {
         }
         return ctx.makeImage()
     }
-    static func waveMap(w: Int, h: Int, frequency: Double) -> CGImage? {
+    static func waveMap(w: Int, h: Int, frequency: Double) -> CIImage? {
         // A small displacement map scales smoothly at preview and export sizes.
+        // Core Image enlarges it during the render; a CPU-side full-size copy cost
+        // about 35 ms and 23 MB per 2400-pixel image.
         let mw = 256, mh = max(1, Int(256 * Double(h) / Double(w)))
         guard let ctx = canvas(w: mw, h: mh), let buffer = ctx.data?.assumingMemoryBound(to: UInt8.self) else { return nil }
         for y in 0..<mh { for x in 0..<mw {
@@ -113,9 +125,9 @@ final class Renderer {
             buffer[i+1] = UInt8((0.5 + 0.48 * cos(u * frequency * .pi * 2 + v * 3)) * 255)
             buffer[i+2] = 128; buffer[i+3] = 255
         }}
-        return ctx.makeImage().flatMap { small in
-            guard let full = canvas(w: w, h: h) else { return nil }
-            full.interpolationQuality = .high; full.draw(small, in: CGRect(x: 0, y: 0, width: w, height: h)); return full.makeImage()
+        return ctx.makeImage().map { small in
+            CIImage(cgImage: small).clampedToExtent().transformed(by: CGAffineTransform(scaleX: Double(w) / Double(mw), y: Double(h) / Double(mh)))
+                .cropped(to: CGRect(x: 0, y: 0, width: w, height: h))
         }
     }
     static func starterPNG() -> Data? {

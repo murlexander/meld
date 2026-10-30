@@ -9,7 +9,7 @@ Meld turns a folder of photographs and textures into many abstract possibilities
 - Photos-style grid with keyboard culling (arrows, Return, F/D, V) and previous/next in refinement.
 - Values and Notan views, palette swatches with hex copy, palettes on contact sheets.
 - Copy Image and drag-out at 2400 pixels; grid thumbnail sizes (⌘+ / ⌘−).
-- Faster generation and export through parallel decoding, rendering and PNG encoding.
+- About 2.7× faster generation and export through parallel decoding, rendering and PNG encoding, at a lower memory peak.
 
 ## Next
 

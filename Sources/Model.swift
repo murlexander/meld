@@ -539,33 +539,26 @@ final class Studio: ObservableObject {
         nextGroupID += 1
         trialsQueue.async { [weak self] in
             guard let self else { return }
-            let loader = MaterialLoader(), renderer = self.batchRenderer
+            let renderer = self.batchRenderer
             defer { renderer.context.clearCaches() }
             do {
                 let scan = try MaterialLoader.scan(folder, cancelled: { task.cancelled })
-                let wanted = min(12, scan.urls.count)
-                var pool: [PreparedMaterial] = []; var skipped = 0
+                // Start with enough material for a recipe, then broaden each group of six.
+                func poolSize(_ index: Int) -> Int { 3 + (index / 6) * 2 }
+                let wanted = min(12, scan.urls.count, poolSize(count - 1))
                 let candidates = Array(scan.urls.shuffled().prefix(64))
-                var candidateIndex = 0
-                func gather(until target: Int) {
-                    while pool.count < min(wanted, target), candidateIndex < candidates.count, !task.cancelled {
-                        let url = candidates[candidateIndex]; candidateIndex += 1
-                        autoreleasepool {
-                            if let loaded = loader.load(url, maximum: 2400, cancelled: { task.cancelled }), !task.cancelled {
-                                pool.append(PreparedMaterial(loaded.layer))
-                            } else if !task.cancelled { skipped += 1 }
-                        }
-                        let loadedCount = pool.count
-                        DispatchQueue.main.async {
-                            guard self.trialJob === task, !task.cancelled else { return }
-                            self.trialMessage = "Gathering images · \(loadedCount) ready"
-                        }
+                // Decoding runs ahead on a few threads; the pool keeps sampled order.
+                var started = false
+                let gatherer = MaterialGatherer(candidates, wanted: wanted, workers: 3, loader: MaterialLoader(),
+                                                cancelled: { task.cancelled }) { loadedCount in
+                    DispatchQueue.main.async {
+                        guard self.trialJob === task, !task.cancelled, !started else { return }
+                        self.trialMessage = "Gathering images · \(loadedCount) ready"
                     }
                 }
-                // Start with enough material for a recipe, then broaden each group of six.
-                gather(until: 3)
+                let initial = gatherer.pool(atLeast: poolSize(0))
                 guard !task.cancelled else { return }
-                guard !pool.isEmpty else {
+                guard !initial.isEmpty else {
                     DispatchQueue.main.async {
                         guard self.trialJob === task, !task.cancelled else { return }
                         self.makingTrials = false
@@ -577,15 +570,17 @@ final class Studio: ObservableObject {
                 }
                 let styles = TrialGenerator.styles(count: count, seed: seed)
                 var produced = 0
-                for (i, style) in styles.enumerated() {
-                    if i > 0 && i % 6 == 0 { gather(until: 3 + (i / 6) * 2) }
-                    if task.cancelled { return }
-                    let trial: Trial? = autoreleasepool {
-                        let art = TrialGenerator.compose(pool, style: style, aspect: aspect, seed: seed &+ UInt64(i+1))
+                // Previews render concurrently on the shared context and arrive in number order.
+                Concurrent.ordered(styles.count, width: 3, stop: { task.cancelled }) { i -> Trial? in
+                    let pool = gatherer.pool(atLeast: poolSize(i))
+                    if task.cancelled { return nil }
+                    return autoreleasepool {
+                        let art = TrialGenerator.compose(pool, style: styles[i], aspect: aspect, seed: seed &+ UInt64(i+1))
                         guard let image = renderer.render(art, longEdge: 480) else { return nil }
-                        return Trial(number: i+1, style: style, art: art, thumbnail: image)
+                        return Trial(number: i+1, style: styles[i], art: art, thumbnail: image)
                     }
-                    guard let trial else { continue }
+                } deliver: { _, trial in
+                    guard let trial, !task.cancelled else { return }
                     produced += 1; let first = produced == 1
                     DispatchQueue.main.async {
                         guard self.trialJob === task, !task.cancelled else { return }
@@ -593,12 +588,14 @@ final class Studio: ObservableObject {
                             // Replace the previous set, keeping its picks in their own rows.
                             self.keepOnlyPicks()
                             self.groups.insert(group, at: 0); self.setCount += 1
-                            self.trialsFolder = folder; self.trialProgress = 0
+                            self.trialsFolder = folder; self.trialProgress = 0; started = true
                         }
                         self.append(trial, to: group)
                         self.trialMessage = "Making previews · \(self.trialProgress) of \(count)"
                     }
                 }
+                if task.cancelled { return }
+                let pool = gatherer.pool(atLeast: poolSize(count - 1)), skipped = gatherer.skipped
                 let loadedCount = pool.count
                 DispatchQueue.main.async {
                     guard self.trialJob === task, !task.cancelled else { return }
@@ -713,16 +710,18 @@ final class Studio: ObservableObject {
             defer { renderer.context.clearCaches() }
             let materials = layers.map(PreparedMaterial.init)
             var produced = 0
-            for i in 0..<count {
-                if task.cancelled { return }
-                let trial: Trial? = autoreleasepool {
+            // Variations render concurrently and arrive in order, like a new set.
+            Concurrent.ordered(count, width: 3, stop: { task.cancelled }) { i -> Trial? in
+                if task.cancelled { return nil }
+                return autoreleasepool {
                     // The row runs from close relatives to bolder ones.
                     let amount = 0.6 + 1.2 * Double(i) / Double(max(1, count - 1))
                     let varied = TrialGenerator.vary(art, materials: materials, seed: seed &+ UInt64(i + 1), amount: amount)
                     guard let image = renderer.render(varied, longEdge: 480) else { return nil }
                     return Trial(number: 0, style: style, art: varied, thumbnail: image)
                 }
-                guard let trial else { continue }
+            } deliver: { _, trial in
+                guard let trial, !task.cancelled else { return }
                 produced += 1; let first = produced == 1
                 DispatchQueue.main.async {
                     guard self.trialJob === task, !task.cancelled else { return }
@@ -731,6 +730,7 @@ final class Studio: ObservableObject {
                     self.trialMessage = "Making variations · \(self.trialProgress) of \(count)"
                 }
             }
+            if task.cancelled { return }
             DispatchQueue.main.async {
                 guard self.trialJob === task, !task.cancelled else { return }
                 self.makingTrials = false
@@ -893,35 +893,22 @@ final class Studio: ObservableObject {
         exportingTrials = true; trialExportProgress = 0; trialExportTotal = chosen.count
         exportQueue.async { [weak self] in
             guard let self else { return }
-            let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.dateFormat = "yyyy-MM-dd HH.mm.ss"
+            let formatter = DateFormatter()
+            // A fixed locale keeps the 24-hour folder name regardless of the user's clock setting.
+            formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.dateFormat = "yyyy-MM-dd HH.mm.ss"
             let folder = parent.appendingPathComponent("Meld picks \(formatter.string(from: Date())) \(UUID().uuidString.prefix(6))", isDirectory: true)
             let renderer = self.exportRenderer
             defer { renderer.context.clearCaches() }
             var completed = 0
-            var exported: [Trial] = []
             do {
                 try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
-                for trial in chosen {
-                    if task.cancelled { break }
-                    try autoreleasepool {
-                        guard let cg = renderer.render(trial.art, longEdge: 2400) else { throw CocoaError(.fileWriteUnknown) }
-                        if task.cancelled { return }
-                        guard let png = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:]) else { throw CocoaError(.fileWriteUnknown) }
-                        if task.cancelled { return }
-                        try png.write(to: folder.appendingPathComponent("\(trial.title).png"), options: .withoutOverwriting)
-                        var copy = trial
-                        let scale = min(1, 480 / Double(max(cg.width, cg.height)))
-                        if let ctx = Renderer.canvas(w: max(1, Int(Double(cg.width) * scale)), h: max(1, Int(Double(cg.height) * scale))) {
-                            ctx.interpolationQuality = .high
-                            ctx.draw(cg, in: CGRect(x: 0, y: 0, width: ctx.width, height: ctx.height))
-                            if let thumbnail = ctx.makeImage() { copy.thumbnail = thumbnail }
-                        }
-                        exported.append(copy)
-                        completed += 1
-                    }
-                    let progress = completed
+                // A few picks render and encode at once; the contact sheet keeps their chosen order.
+                let outcome = TrialExporter.write(chosen, into: folder, renderer: renderer, cancelled: { task.cancelled }) { progress in
                     DispatchQueue.main.async { self.trialExportProgress = progress }
                 }
+                let exported = outcome.exported
+                completed = exported.count
+                if let failure = outcome.failure { throw failure }
                 if completed > 0, let contact = TrialGenerator.contactSheet(exported) {
                     try contact.write(to: folder.appendingPathComponent("Contact sheet.png"), options: .withoutOverwriting)
                 }
@@ -958,7 +945,7 @@ final class Studio: ObservableObject {
             do {
                 try autoreleasepool {
                     guard let cg = self.exportRenderer.render(snapshot, longEdge: 2400),
-                          let data = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:]) else { throw CocoaError(.fileWriteUnknown) }
+                          let data = PNGExport.data(cg) else { throw CocoaError(.fileWriteUnknown) }
                     try data.write(to: url, options: .atomic)
                 }
                 DispatchQueue.main.async { self.exporting = false; self.status = "Exported \(url.lastPathComponent)" }
