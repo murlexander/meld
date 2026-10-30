@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @StateObject var studio: Studio
     init() {
         if CommandLine.arguments.contains("--self-test") { SelfTest.run(); exit(0) }
+        if CommandLine.arguments.contains("--benchmark") { Benchmark.run() }
         let isolated = CommandLine.arguments.contains("--ui-test")
         let model = Studio(restoreSource: !isolated, starter: false)
         if isolated, let i = CommandLine.arguments.firstIndex(of: "--ui-test-source"), i+1 < CommandLine.arguments.count {
