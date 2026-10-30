@@ -16,7 +16,10 @@ struct LoadedMaterial {
 final class MaterialLoader {
     static let rawExtensions: Set<String> = ["raw", "dng", "nef", "nrw", "arw", "srf", "sr2", "cr2", "cr3", "crw", "raf", "orf", "rw2", "rwl", "pef", "ptx", "srw", "3fr", "fff", "iiq", "kdc", "dcr", "erf", "mos", "mrw", "mef", "x3f"]
     static let photoExtensions: Set<String> = ["png", "jpg", "jpeg", "jpe", "tif", "tiff", "heic", "heif", "hif", "gif", "bmp", "webp", "avif", "jp2", "jxl"]
-    private let context = CIContext(options: [.cacheIntermediates: false, .memoryTarget: 128])
+    // No render-task memory target here: tiling RAW development under one roughly
+    // doubled its time and raised the process footprint. Contexts are thread-safe,
+    // so concurrent loads share this one.
+    private let context = CIContext(options: [.cacheIntermediates: false])
     static func isCandidate(_ url: URL, type: UTType?) -> Bool {
         rawExtensions.contains(url.pathExtension.lowercased()) || photoExtensions.contains(url.pathExtension.lowercased()) || type?.conforms(to: .image) == true
     }

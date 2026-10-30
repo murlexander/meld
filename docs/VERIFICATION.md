@@ -1,5 +1,54 @@
 # Verification
 
+## Performance update — 30 October 2026
+
+All 244 rendering and session checks passed on the optimized build, and 256 with the public Nikon NEF fixture (`MELD_RAW_FIXTURE`). The 224 earlier checks are unchanged; 20 new checks and waits cover the concurrent pipeline. Recipes, seeds, 480-pixel previews, 2400-pixel PNG exports, contact sheets, cancellation and late-callback guarantees are unchanged. Source files were only read.
+
+Measured with `Meld --benchmark` on Apple M2 Pro / 16 GB, macOS 27.2. Each figure is the median of three processes × three runs, run interleaved with a build of the previous commit (fba8664). Peak footprint comes from `/usr/bin/time -l` on one run, measured three times. Each run samples sources at random, so individual runs vary, and other work on the Mac added noise.
+
+September shoot (23 Fuji shots, 40 MP JPEG + RAF, 2.2 GB):
+
+| Operation | Before | After |
+| --- | ---: | ---: |
+| First preview | 1.05 s | 0.37 s |
+| All 36 previews | 3.63 s | 1.60 s |
+| Open a preview | 51 ms | 36 ms |
+| Export 6 picks and contact sheet | 1.51 s | 0.52 s |
+| Peak memory footprint | 1.80–2.14 GB | 1.14–1.20 GB |
+
+Canada previews (16 JPEGs):
+
+| Operation | Before | After |
+| --- | ---: | ---: |
+| First preview | 0.30 s | 0.13 s |
+| All 36 previews | 1.49 s | 0.45 s |
+| Export 6 picks and contact sheet | 1.50 s | 0.53 s |
+
+The first generation after launch is slower, because the first RAW development in a process costs about 0.55–0.6 s. Cold first runs on the Fuji folder took 0.46–0.77 s to the first preview and 1.6–2.0 s for all 36, versus 0.76–1.28 s and 2.6–3.9 s before.
+
+Where the time went before: decoding was about 85% of generating 36 previews. A 40 MP JPEG takes about 150 ms to reach 2400 pixels; a RAF took 370–480 ms. Rendering a 480-pixel preview takes 3–20 ms, a 2400-pixel export 35–110 ms, and PNG compression about 180 ms per export. Everything ran one item at a time.
+
+- **Mirrored tiles** made Core Image hold the whole mirrored cell at source resolution (up to 4800 × 3200, even for a 480-pixel preview). Twelve Tiles previews added 1.6 GB of footprint with the Fuji JPEGs and 2.8 GB with synthetic sources; other styles stayed flat. The cell is now scaled to its on-canvas size, in whole pixels, before mirroring and tiling. Placement is the same and Tiles previews render about 4× faster. Output differs only by resampling order (mean 3–5/255); preview and export renders were inspected side by side. A new check bounds the footprint of twelve tiled previews; the old renderer grew by 2.76 GB on the same check.
+- **RAW development** ran under the 128 MB render-task memory target. Core Image then developed the RAW in tiles, taking about 2× longer and leaving a higher footprint (1.46 vs 0.99 GB after eight RAFs). The decoding context no longer has a target. Developed pixels are effectively unchanged (mean difference 0.002/255). Render contexts keep the 128 MB target. The first RAW development in a process adds a fixed ~600 MB, independent of concurrency.
+- **Decoding** now runs three at a time, ahead of rendering (`Sources/Pipeline.swift`). The pool keeps sampled order: each group gets exactly the first 3, 5, 7… usable candidates, as a one-at-a-time decode would. No more than 12 decodes succeed, and unreadable files are counted as before.
+- **Previews** render three at a time on the shared batch context and are delivered in number order. The first group of six still appears early, and the first result still clears the previous set.
+- **Batch export** encodes up to four PNGs at a time with ImageIO (same bytes as `NSBitmapImageRep`), while their 2400-pixel renders take turns. The Flow displacement map is enlarged by Core Image instead of a CPU-side 2400-pixel copy (35 ms and 23 MB per export; mean difference about 1/255). Cancellation still stops new work and is checked before encoding and before writing.
+- The export folder name sets `en_US_POSIX`, so a 12-hour clock setting no longer produces names like “5.34.34 PM”.
+
+New checks: ordered delivery and stopping of concurrent work; the ordered, bounded material pool with unreadable files; cancelled gathering; tiled-preview footprint; tile layout at both sizes; full-size wave map; progressive, numbered, distinct and balanced concurrent previews; parallel export identical to serial rendering (max one level per channel) in chosen order; mid-batch export cancellation with no late writes; and 24-hour folder names.
+
+Tried and not kept:
+
+- One RAW development at a time, with JPEGs alongside: slower in a controlled A/B over six fixed samples (cold all-36 median 1.77 s vs 1.18 s). Earlier slow outliers came from other load on the Mac.
+- Four decode workers: no faster than three for all 36, slower first previews, and up to 90 MB more footprint. Two workers were slower.
+- More preview renders at once: little effect on the Fuji folder, where decoding is the limit. Three beat one on the Canada folder (0.44 vs 0.53 s).
+- Six exports at once: 0.43 s for 6 picks, but exporting all 36 picks peaked at 2.4–2.6 GB. Four at a time, with renders taking turns, exported 36 picks in 2.6–2.9 s at a 1.78–2.0 GB peak. The previous serial code took 8.7–8.9 s and peaked at 2.14–2.24 GB on the same workload.
+- PNG row filters: none was faster than the default adaptive filter (174–235 ms vs 186 ms), and several made larger files.
+- Decoding a smaller working copy first and the 2400-pixel copy later: RAW development costs about the same at 1000 pixels (~370 ms), and a later decode would reread sources after loading. That would break the guarantee that exports are independent of the source folder once loaded.
+- A half-float working format for RAW development: no gain.
+
+Profiling helpers and logs are in `/private/tmp/meld-perf-prof/`; the NEF fixture was downloaded to `/private/tmp/meld-perf-raw-fixture/` only. The GUI was not launched or installed.
+
 ## Performance update — 7 October 2026
 
 236 rendering and session checks passed on the final local build, including the public Nikon NEF fixture and 40 additional checks/waits covering the performance changes. The original 196 checks continue to pass. Product code was built with the normal optimized arm64 build. The temporary signed bundle passes strict signature verification, and its executable hash matches the local `Meld.app`. Finder/iCloud can reattach metadata to the local app after a successful verification; the signed staging copy printed by `build.sh` stays outside that directory. The installed app and running session were not replaced or restarted.
