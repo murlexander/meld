@@ -10,7 +10,10 @@ final class CancellableJob {
 
 struct Trial: Identifiable {
     let id = UUID()
-    let number: Int
+    /// Session-wide number; unique across sets so exported file names never collide.
+    var number: Int
+    /// The set or variation group this preview belongs to.
+    var group = 0
     let style: CompositionStyle
     let original: Artwork
     var art: Artwork
@@ -21,6 +24,12 @@ struct Trial: Identifiable {
     init(number: Int, style: CompositionStyle, art: Artwork, thumbnail: CGImage) {
         self.number = number; self.style = style; self.original = art; self.art = art; self.thumbnail = thumbnail
     }
+}
+
+/// A row of previews in the grid: one generated set, or variations of one preview.
+struct TrialGroup: Identifiable, Equatable {
+    let id: Int
+    let title: String
 }
 
 struct Refinement: Equatable {
@@ -64,9 +73,16 @@ struct PreparedMaterial {
 enum SourcePalette {
     static func colours(_ source: SourceImage?) -> [Ink] {
         let fallback = [Ink(0.12, 0.2, 0.27), Ink(0.7, 0.4, 0.25), Ink(0.9, 0.85, 0.73)]
-        guard let image = source?.thumbnail,
-              let context = Renderer.canvas(w: 24, h: 24),
-              let pixels = context.data?.assumingMemoryBound(to: UInt8.self) else { return fallback }
+        guard let image = source?.thumbnail else { return fallback }
+        return cluster(image, count: 4) ?? fallback
+    }
+    /// Main colours of a rendered preview, dark to light, for painting references.
+    static func colours(of image: CGImage, count: Int = 5) -> [Ink] {
+        cluster(image, count: count) ?? []
+    }
+    private static func cluster(_ image: CGImage, count: Int) -> [Ink]? {
+        guard let context = Renderer.canvas(w: 24, h: 24),
+              let pixels = context.data?.assumingMemoryBound(to: UInt8.self) else { return nil }
         context.setFillColor(Ink(0.94, 0.92, 0.87).cg)
         context.fill(CGRect(x: 0, y: 0, width: 24, height: 24))
         context.draw(image, in: CGRect(x: 0, y: 0, width: 24, height: 24))
@@ -78,13 +94,13 @@ enum SourcePalette {
         }
         // Farthest-first centres preserve small colour accents instead of averaging to grey.
         var centres = [samples[0]]
-        for _ in 1..<4 {
+        for _ in 1..<count {
             centres.append(samples.max { a, b in
                 centres.map { distance(a, $0) }.min()! < centres.map { distance(b, $0) }.min()!
             }!)
         }
         for _ in 0..<6 {
-            var groups = Array(repeating: [Ink](), count: 4)
+            var groups = Array(repeating: [Ink](), count: count)
             for sample in samples {
                 let nearest = centres.indices.min { distance(sample, centres[$0]) < distance(sample, centres[$1]) }!
                 groups[nearest].append(sample)
@@ -180,6 +196,63 @@ enum TrialGenerator {
         return art
     }
 
+    /// A relative of a preview: the same recipe and images with nudged placement, pattern
+    /// and distortion. `amount` runs from close (0.5) to bold (2); bolder relatives may swap
+    /// in another image from the session, change a pattern shape or a blend.
+    static func vary(_ base: Artwork, materials: [PreparedMaterial], seed: UInt64, amount: Double = 1) -> Artwork {
+        var random = RecipeRandom(seed: seed)
+        let a = min(2, max(0.25, amount))
+        func clamp(_ v: Double, _ range: ClosedRange<Double>) -> Double { min(range.upperBound, max(range.lowerBound, v)) }
+        func nudge(_ v: Double, _ spread: Double) -> Double { let s = min(0.9, spread * a); return v * random.value((1 - s)...(1 + s)) }
+        func shift(_ spread: Double) -> Double { random.value(-spread * a...spread * a) }
+        func chance(_ p: Double) -> Bool { random.value(0...1) < p * a }
+        var art = base
+        let palette = materials.flatMap(\.colours)
+        for i in art.layers.indices {
+            var layer = art.layers[i]
+            layer.id = UUID()
+            layer.scale = clamp(nudge(layer.scale, 0.2), 0.1...3)
+            layer.rotation = clamp(layer.rotation + shift(15), -180...180)
+            layer.x = clamp(layer.x + shift(0.1), -0.75...0.75)
+            layer.y = clamp(layer.y + shift(0.1), -0.75...0.75)
+            if layer.material == .image {
+                if i > 0 {
+                    layer.opacity = clamp(layer.opacity + shift(0.12), 0.1...1)
+                    if chance(0.15) { layer.blend = random.pick([.softLight, .screen, .normal, .multiply]) }
+                }
+            } else {
+                layer.frequency = clamp(nudge(layer.frequency, 0.35), 2...60)
+                layer.rotation = clamp(layer.rotation + shift(25), -180...180)
+                layer.opacity = clamp(layer.opacity + shift(0.1), 0.05...1)
+                if !palette.isEmpty && chance(0.3) { layer.ink = random.pick(palette) }
+                if chance(0.12) {
+                    layer.material = random.pick([.stripes, .dots, .checker, .rings, .noise])
+                    layer.name = layer.material.label
+                }
+            }
+            art.layers[i] = layer
+        }
+        let imageIndices = art.layers.indices.filter { art.layers[$0].material == .image }
+        let fresh = materials.filter { material in !art.layers.contains { $0.image === material.layer.image } }
+        if !imageIndices.isEmpty, !fresh.isEmpty, chance(0.25) {
+            let target = random.pick(imageIndices), replacement = random.pick(fresh).layer
+            art.layers[target].image = replacement.image
+            art.layers[target].sourcePath = replacement.sourcePath
+            art.layers[target].name = replacement.name
+        }
+        var warp = art.warp
+        warp.wave = clamp(nudge(warp.wave, 0.35), 0...1)
+        warp.wavelength = clamp(nudge(warp.wavelength, 0.3), 1...12)
+        warp.twist = clamp(nudge(warp.twist, 0.35), -5...5)
+        warp.bulge = clamp(nudge(warp.bulge, 0.35), -0.9...0.9)
+        warp.pixel = clamp(nudge(warp.pixel, 0.3), 0...1)
+        warp.centerX = clamp(warp.centerX + shift(0.15), 0...1)
+        warp.centerY = clamp(warp.centerY + shift(0.15), 0...1)
+        warp.saturation = clamp(warp.saturation + shift(0.15), 0...2)
+        art.warp = warp
+        return art
+    }
+
     static func contactSheet(_ trials: [Trial]) -> Data? {
         guard !trials.isEmpty else { return nil }
         let columns = min(4, trials.count), cell = 300, row = 328
@@ -196,6 +269,11 @@ enum TrialGenerator {
             context.draw(trial.thumbnail, in: CGRect(x: Double(x) + (Double(cell)-w)/2, y: Double(y) + 30 + (edge-h)/2, width: w, height: h))
             (trial.title as NSString).draw(at: CGPoint(x: x + 10, y: y + 8), withAttributes: [
                 .font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.darkGray])
+            // A small palette strip turns the sheet into a painting reference.
+            for (j, ink) in SourcePalette.colours(of: trial.thumbnail).reversed().enumerated() {
+                context.setFillColor(ink.cg)
+                context.fill(CGRect(x: x + cell - 24 - j * 16, y: y + 8, width: 14, height: 14))
+            }
         }
         NSGraphicsContext.restoreGraphicsState()
         guard let image = context.makeImage() else { return nil }

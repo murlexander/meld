@@ -41,11 +41,57 @@ struct MaterialView: View {
 
 struct TrialsView: View {
     @ObservedObject var studio: Studio
-    @TrialState private var favouritesOnly = false
-    private var visible: [Trial] {
-        favouritesOnly ? studio.trials.filter { studio.favouriteTrials.contains($0.id) } : studio.trials
-    }
+    @TrialState private var columns = 4
+    @FocusState private var gridFocused: Bool
+    private let cellWidth: CGFloat = 170, spacing: CGFloat = 18, margin: CGFloat = 24
     var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            GeometryReader { geometry in
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        if studio.visibleTrials.isEmpty { emptyState } else { grid }
+                    }
+                    .onChange(of: studio.gridSelection) { _, id in
+                        guard let id else { return }
+                        withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(id) }
+                    }
+                    .onAppear { if let id = studio.gridSelection { proxy.scrollTo(id, anchor: .center) } }
+                }
+                .onAppear { columns = columnCount(geometry.size.width) }
+                .onChange(of: geometry.size.width) { _, width in columns = columnCount(width) }
+            }
+            .focusable().focused($gridFocused).focusEffectDisabled()
+            .onKeyPress(keys: [.leftArrow, .rightArrow, .upArrow, .downArrow, .return, .space]) { press in
+                switch press.key {
+                case .leftArrow: studio.moveSelection(by: -1)
+                case .rightArrow: studio.moveSelection(by: 1)
+                case .upArrow: studio.moveSelectionVertically(-1, columns: columns)
+                case .downArrow: studio.moveSelectionVertically(1, columns: columns)
+                default: if let id = studio.gridSelection { studio.openTrial(id) }
+                }
+                return .handled
+            }
+            // Louppe's culling keys: F picks, D removes the pick.
+            .onKeyPress(characters: CharacterSet(charactersIn: "fdvFDV")) { press in
+                guard press.modifiers.isEmpty || press.modifiers == .shift, let id = studio.gridSelection else { return .ignored }
+                switch press.characters.lowercased() {
+                case "f": studio.setPick(id, true)
+                case "d": studio.setPick(id, false)
+                default: studio.makeVariations(of: id)
+                }
+                return .handled
+            }
+            .onAppear { gridFocused = true }
+            Divider()
+            Text("New sets keep your picks. Export them before closing Meld.")
+                .font(.caption).foregroundStyle(.secondary).padding(10)
+        }.background(Color(nsColor: .windowBackgroundColor)).navigationTitle("Meld")
+            .onChange(of: studio.groups.first?.id) { _, _ in if studio.makingTrials { studio.picksOnly = false } }
+    }
+
+    private var header: some View {
         VStack(spacing: 0) {
             HStack(spacing: 16) {
                 Button { studio.chooseMaterial() } label: {
@@ -53,8 +99,13 @@ struct TrialsView: View {
                         .lineLimit(1).truncationMode(.middle)
                 }.modifier(StudioButtons()).help("Choose material for the next set")
                 Spacer(minLength: 12)
-                Toggle(isOn: $favouritesOnly) { Label("Picks \(studio.favouriteTrials.count)", systemImage: "star") }
-                    .toggleStyle(.button).accessibilityLabel("Show picks")
+                Toggle(isOn: $studio.picksOnly) { Label("Picks \(studio.favouriteTrials.count)", systemImage: "star") }
+                    .toggleStyle(.button).accessibilityLabel("Show picks only")
+                Button { if let id = studio.gridSelection { studio.makeVariations(of: id) } } label: {
+                    Label("Variations", systemImage: "square.stack.3d.down.right")
+                }
+                .disabled(studio.gridSelection == nil || studio.makingTrials || studio.exportingTrials)
+                .help("Make 12 variations of the selected preview (V)")
                 if studio.makingTrials {
                     ProgressView().controlSize(.small)
                     Button("Stop") { studio.cancelTrials() }
@@ -64,59 +115,93 @@ struct TrialsView: View {
                 } else {
                     Button("New 36 previews") { studio.makeTrials() }
                         .disabled(studio.sourceFolder == nil || studio.materialsBusy)
-                        .help("Replace this set; export your picks first")
+                        .help("Make a new set from the source folder; your picks stay")
                     Button("Export picks…") { studio.exportTrials() }
                         .modifier(StudioButtons(prominent: true)).disabled(studio.favouriteTrials.isEmpty)
                 }
-            }.buttonStyle(.bordered).controlSize(.large).padding(.horizontal, 24).padding(.vertical, 16)
+            }.buttonStyle(.bordered).controlSize(.large).padding(.horizontal, margin).padding(.vertical, 16)
             HStack {
                 Text(studio.exportingTrials ? "Exporting \(studio.trialExportProgress) of \(studio.trialExportTotal)…" : studio.trialMessage)
                     .lineLimit(1)
                 Spacer()
-                Text(studio.makingTrials ? "Refine when ready, or stop to explore these previews." : "Click to refine. Star the ones you like.")
-            }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 24).padding(.bottom, 14)
-            Divider()
-            ScrollView {
-                if visible.isEmpty {
-                    VStack(spacing: 14) {
-                        if studio.makingTrials { ProgressView(); Text("Finding possibilities in your images…") }
-                        else if favouritesOnly {
-                            Text("Star a preview to add it to your picks.")
-                            Button("Show all previews") { favouritesOnly = false }.buttonStyle(.bordered)
-                        } else {
-                            Text("No previews yet.")
-                            Button("Choose material") { studio.chooseMaterial() }.buttonStyle(.bordered)
-                        }
-                    }.foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.top, 120)
-                } else {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 18)], spacing: 22) {
-                        ForEach(visible) { trial in
-                            VStack(spacing: 8) {
-                                Button { studio.openTrial(trial.id) } label: {
-                                    Image(decorative: trial.thumbnail, scale: 1).resizable().scaledToFit()
-                                        .frame(maxWidth: .infinity).frame(height: 158)
-                                        .background(Color(nsColor: .controlBackgroundColor))
-                                }.buttonStyle(.plain).disabled(studio.makingTrials)
-                                    .accessibilityLabel("Refine preview \(trial.title)")
-                                HStack(spacing: 5) {
-                                    Text(trial.title).font(.caption).foregroundStyle(.secondary)
-                                    if trial.adjusted { Image(systemName: "slider.horizontal.3").font(.caption2).foregroundStyle(.secondary).help("Adjusted") }
-                                    Spacer(minLength: 0)
-                                    Button { studio.toggleFavourite(trial.id) } label: {
-                                        Image(systemName: studio.favouriteTrials.contains(trial.id) ? "star.fill" : "star")
-                                            .foregroundStyle(studio.favouriteTrials.contains(trial.id) ? Color.accentColor : .secondary)
-                                    }.buttonStyle(.plain).padding(3)
-                                        .accessibilityLabel("\(studio.favouriteTrials.contains(trial.id) ? "Unpick" : "Pick") preview \(trial.number)")
-                                }.padding(.horizontal, 2)
+                Text(studio.makingTrials ? "Refine when ready, or stop to explore these previews."
+                     : "Double-click to refine · F to pick, D to unpick · V for variations")
+            }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, margin).padding(.bottom, 14)
+        }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 14) {
+            if studio.makingTrials { ProgressView(); Text("Finding possibilities in your images…") }
+            else if studio.picksOnly {
+                Text("Star a preview to add it to your picks.")
+                Button("Show all previews") { studio.picksOnly = false }.buttonStyle(.bordered)
+            } else {
+                Text("No previews yet.")
+                Button("Choose material") { studio.chooseMaterial() }.buttonStyle(.bordered)
+            }
+        }.foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.top, 120)
+    }
+
+    private var grid: some View {
+        LazyVStack(alignment: .leading, spacing: 26) {
+            ForEach(studio.groups) { group in
+                let items = studio.visibleTrials.filter { $0.group == group.id }
+                if !items.isEmpty {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if studio.groups.count > 1 {
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Text(group.title).font(.headline)
+                                Text("\(items.count)").foregroundStyle(.secondary).monospacedDigit()
                             }
                         }
-                    }.padding(24)
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: cellWidth), spacing: spacing)], spacing: 16) {
+                            ForEach(items) { trial in cell(trial).id(trial.id) }
+                        }
+                    }
                 }
-            }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }.padding(margin)
+    }
+
+    private func cell(_ trial: Trial) -> some View {
+        let selected = studio.gridSelection == trial.id
+        let picked = studio.favouriteTrials.contains(trial.id)
+        return VStack(spacing: 8) {
+            Image(decorative: trial.thumbnail, scale: 1).resizable().scaledToFit()
+                .frame(maxWidth: .infinity).frame(height: 158)
+                .background(Color(nsColor: .controlBackgroundColor))
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2) { guard !studio.makingTrials else { return }; studio.openTrial(trial.id) }
+                .simultaneousGesture(TapGesture().onEnded { studio.gridSelection = trial.id; gridFocused = true })
+                .onDrag { studio.dragProvider(for: trial.id) }
+                .accessibilityLabel("Preview \(trial.title)").accessibilityAddTraits(selected ? [.isSelected, .isButton] : .isButton)
+                .accessibilityAction { studio.openTrial(trial.id) }
+            HStack(spacing: 5) {
+                Text(trial.title).font(.caption).foregroundStyle(selected ? .primary : .secondary)
+                if trial.adjusted { Image(systemName: "slider.horizontal.3").font(.caption2).foregroundStyle(.secondary).help("Adjusted") }
+                Spacer(minLength: 0)
+                Button { studio.toggleFavourite(trial.id) } label: {
+                    Image(systemName: picked ? "star.fill" : "star")
+                        .foregroundStyle(picked ? Color.accentColor : .secondary)
+                }.buttonStyle(.plain).padding(3)
+                    .accessibilityLabel("\(picked ? "Unpick" : "Pick") preview \(trial.number)")
+            }.padding(.horizontal, 2)
+        }
+        .padding(6)
+        .background(selected ? Color.accentColor.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 8))
+        .overlay { if selected { RoundedRectangle(cornerRadius: 8).strokeBorder(Color.accentColor, lineWidth: 2) } }
+        .contextMenu {
+            Button("Refine") { studio.openTrial(trial.id) }.disabled(studio.makingTrials)
+            Button(picked ? "Remove from picks" : "Add to picks") { studio.toggleFavourite(trial.id) }
+            Button("Make 12 variations") { studio.makeVariations(of: trial.id) }
+                .disabled(studio.makingTrials || studio.exportingTrials)
             Divider()
-            Text("Export your picks before starting a new set or closing Meld.")
-                .font(.caption).foregroundStyle(.secondary).padding(10)
-        }.background(Color(nsColor: .windowBackgroundColor)).navigationTitle("Meld")
-            .onChange(of: studio.trials.first?.id) { _, _ in favouritesOnly = false }
+            Button("Copy image") { studio.copyImage(of: trial.id) }
+        }
+    }
+
+    private func columnCount(_ width: CGFloat) -> Int {
+        max(1, Int((width - margin * 2 + spacing) / (cellWidth + spacing)))
     }
 }

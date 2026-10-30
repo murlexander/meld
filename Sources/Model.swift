@@ -93,6 +93,19 @@ final class Studio: ObservableObject {
     @Published private(set) var exportingTrials = false
     @Published private(set) var trialExportProgress = 0
     @Published private(set) var trialExportTotal = 0
+    /// Grid rows, newest first. A new set keeps earlier picks in their original rows.
+    @Published private(set) var groups: [TrialGroup] = []
+    @Published var gridSelection: UUID?
+    @Published var picksOnly = false
+    /// Main colours of the refined preview as displayed (before any value study).
+    @Published private(set) var palette: [Ink] = []
+    @Published private(set) var study = Study.colour
+    @Published private(set) var copying = false
+    /// Tests use a private pasteboard so they never replace the user's clipboard.
+    var pasteboard = NSPasteboard.general
+    private var nextTrialNumber = 1
+    private var nextGroupID = 1
+    private var setCount = 0
     private let trialsQueue = DispatchQueue(label: "Meld.trials", qos: .userInitiated)
     private var trialJob = CancellableJob()
     private var trialExportJob = CancellableJob()
@@ -116,6 +129,7 @@ final class Studio: ObservableObject {
         let visit: Int
         let trial: UUID?
         let comparing: Bool
+        let study: Study
         let layers: [UUID]
         let aspect: String
         let edge: Int
@@ -328,7 +342,7 @@ final class Studio: ObservableObject {
     func schedule(interactive: Bool = false) {
         generation += 1
         let snapshot = comparing ? activeTrial?.original ?? art : art
-        let scope = PreviewScope(visit: previewVisit, trial: activeTrialID, comparing: comparing,
+        let scope = PreviewScope(visit: previewVisit, trial: activeTrialID, comparing: comparing, study: study,
                                  layers: snapshot.layers.map(\.id), aspect: snapshot.aspect, edge: previewLongEdge)
         previewScope = scope
         lastPreviewChange = Date()
@@ -359,14 +373,17 @@ final class Studio: ObservableObject {
         let edge = draft ? min(640, request.scope.edge) : request.scope.edge
         queue.async { [weak self] in
             guard let self else { return }
-            let image = autoreleasepool {
-                self.renderer.render(request.art, longEdge: edge,
-                                     bypass: request.scope.comparing && request.scope.trial == nil)
+            let (image, palette): (CGImage?, [Ink]?) = autoreleasepool {
+                let rendered = self.renderer.render(request.art, longEdge: edge,
+                                                    bypass: request.scope.comparing && request.scope.trial == nil)
+                let palette = draft ? nil : rendered.map { SourcePalette.colours(of: $0) }
+                return (rendered.flatMap { request.scope.study.apply($0, context: self.renderer.context) }, palette)
             }
             DispatchQueue.main.async {
                 self.previewInFlight = false
                 if self.previewScope == request.scope {
                     self.preview = image.map { NSImage(cgImage: $0, size: .zero) }
+                    if let palette { self.palette = palette }
                     if image == nil { self.error = "The preview couldn’t render. Try undoing the last change." }
                     if draft && self.generation == request.token {
                         self.pendingPreview = PreviewRequest(art: request.art, scope: request.scope,
@@ -487,6 +504,7 @@ final class Studio: ObservableObject {
         }
     }
     func showTrials() {
+        if let id = activeTrialID { gridSelection = id }
         storeActiveTrial(); cancelPreview(); activeTrialID = nil
         stage = trials.isEmpty && !makingTrials ? .material : .previews
     }
@@ -503,6 +521,8 @@ final class Studio: ObservableObject {
         makingTrials = true; trialProgress = 0; trialMessage = "Gathering images…"
         let aspect = batchAspect
         let seed = UInt64.random(in: 0...UInt64.max)
+        let group = TrialGroup(id: nextGroupID, title: "Set \(setCount + 1) · \(folder.lastPathComponent) · \(aspect)")
+        nextGroupID += 1
         trialsQueue.async { [weak self] in
             guard let self else { return }
             let loader = MaterialLoader(), renderer = self.batchRenderer
@@ -555,9 +575,14 @@ final class Studio: ObservableObject {
                     produced += 1; let first = produced == 1
                     DispatchQueue.main.async {
                         guard self.trialJob === task, !task.cancelled else { return }
-                        if first { self.trials = []; self.favouriteTrials = []; self.trialsFolder = folder }
-                        self.trials.append(trial); self.trialProgress = self.trials.count
-                        self.trialMessage = "Making previews · \(self.trials.count) of \(count)"
+                        if first {
+                            // Replace the previous set, keeping its picks in their own rows.
+                            self.keepOnlyPicks()
+                            self.groups.insert(group, at: 0); self.setCount += 1
+                            self.trialsFolder = folder; self.trialProgress = 0
+                        }
+                        self.append(trial, to: group)
+                        self.trialMessage = "Making previews · \(self.trialProgress) of \(count)"
                     }
                 }
                 let loadedCount = pool.count
@@ -568,7 +593,7 @@ final class Studio: ObservableObject {
                     self.trialMessage = "\(produced) previews · \(loadedCount) source images"
                     if skipped > 0 { self.trialMessage += " · \(skipped) unreadable skipped" }
                     if scan.unreadableFolders > 0 { self.trialMessage += " · Some folders unavailable" }
-                    if produced == 0 { self.error = "The trials couldn’t render. Your previous trials and canvas are unchanged." }
+                    if produced == 0 { self.error = "The previews couldn’t render. Your previous previews are unchanged." }
                     self.status = self.trialMessage
                 }
             } catch {
@@ -583,7 +608,176 @@ final class Studio: ObservableObject {
     func cancelTrials() {
         guard makingTrials else { return }
         trialJob.cancel(); makingTrials = false
-        trialMessage = trialProgress > 0 ? "Stopped at \(trials.count) previews" : "Generation stopped"
+        trialMessage = trialProgress > 0 ? "Stopped at \(trialProgress) previews" : "Generation stopped"
+    }
+    private func keepOnlyPicks() {
+        trials.removeAll { !favouriteTrials.contains($0.id) }
+        groups.removeAll { group in !trials.contains { $0.group == group.id } }
+        if let id = gridSelection, !trials.contains(where: { $0.id == id }) { gridSelection = nil }
+    }
+    private func append(_ trial: Trial, to group: TrialGroup) {
+        var trial = trial
+        trial.number = nextTrialNumber; trial.group = group.id; nextTrialNumber += 1
+        trials.append(trial); trialProgress += 1
+    }
+    /// Grid order: newest row first, then generation order within a row.
+    var orderedTrials: [Trial] {
+        groups.flatMap { group in trials.filter { $0.group == group.id } }
+    }
+    var visibleTrials: [Trial] {
+        picksOnly ? orderedTrials.filter { favouriteTrials.contains($0.id) } : orderedTrials
+    }
+    /// Moves the grid selection through visible previews; arrows use the row width.
+    func moveSelection(by offset: Int) {
+        let visible = visibleTrials
+        guard !visible.isEmpty else { return }
+        guard let id = gridSelection, let index = visible.firstIndex(where: { $0.id == id }) else {
+            gridSelection = (offset < 0 ? visible.last : visible.first)?.id; return
+        }
+        gridSelection = visible[min(visible.count - 1, max(0, index + offset))].id
+    }
+    /// Moves the selection up or down a grid row, keeping its column where possible.
+    func moveSelectionVertically(_ step: Int, columns: Int) {
+        let columns = max(1, columns)
+        var rows: [[UUID]] = []
+        for group in groups {
+            let ids = visibleTrials.filter { $0.group == group.id }.map(\.id)
+            rows += stride(from: 0, to: ids.count, by: columns).map { Array(ids[$0..<min(ids.count, $0 + columns)]) }
+        }
+        guard !rows.isEmpty else { return }
+        guard let id = gridSelection, let row = rows.firstIndex(where: { $0.contains(id) }),
+              let column = rows[row].firstIndex(of: id) else { gridSelection = rows[0].first; return }
+        let target = rows[min(rows.count - 1, max(0, row + step))]
+        gridSelection = target[min(column, target.count - 1)]
+    }
+    func setPick(_ id: UUID, _ picked: Bool) {
+        if picked != favouriteTrials.contains(id) { toggleFavourite(id) }
+    }
+    /// Opens the neighbouring visible preview from refinement.
+    func openAdjacentTrial(_ step: Int) {
+        guard let id = activeTrialID else { return }
+        let visible = visibleTrials
+        guard let index = visible.firstIndex(where: { $0.id == id }) else { return }
+        let next = index + step
+        guard visible.indices.contains(next) else { return }
+        openTrial(visible[next].id)
+    }
+    var canOpenPrevious: Bool { adjacentAvailable(-1) }
+    var canOpenNext: Bool { adjacentAvailable(1) }
+    private func adjacentAvailable(_ step: Int) -> Bool {
+        guard let id = activeTrialID, !makingTrials else { return false }
+        let visible = visibleTrials
+        guard let index = visible.firstIndex(where: { $0.id == id }) else { return false }
+        return visible.indices.contains(index + step)
+    }
+    func setStudy(_ value: Study) {
+        guard study != value else { return }
+        study = value
+        if stage == .refine { schedule() }
+    }
+
+    /// Twelve close relatives of one preview, added as a new row without decoding anything.
+    func makeVariations(of id: UUID, count: Int = 12) {
+        guard !materialsBusy, !makingTrials, !exportingTrials else { return }
+        storeActiveTrial()
+        guard let base = trials.first(where: { $0.id == id }) else { return }
+        cancelPreview(); activeTrialID = nil; stage = .previews; picksOnly = false
+        let count = min(48, max(1, count))
+        trialJob.cancel(); let task = CancellableJob(); trialJob = task
+        makingTrials = true; trialProgress = 0; trialMessage = "Making variations of \(base.title)…"
+        let group = TrialGroup(id: nextGroupID, title: "Variations of \(base.title)")
+        nextGroupID += 1
+        // The session's decoded images are the material pool; nothing is read from disk.
+        var seen = Set<ObjectIdentifier>(), layers: [Layer] = []
+        for trial in trials { for layer in trial.art.layers where layer.material == .image {
+            if let image = layer.image, seen.insert(ObjectIdentifier(image)).inserted { layers.append(layer) }
+        }}
+        let art = base.art, style = base.style, seed = UInt64.random(in: 0...UInt64.max)
+        trialsQueue.async { [weak self] in
+            guard let self else { return }
+            let renderer = self.batchRenderer
+            defer { renderer.context.clearCaches() }
+            let materials = layers.map(PreparedMaterial.init)
+            var produced = 0
+            for i in 0..<count {
+                if task.cancelled { return }
+                let trial: Trial? = autoreleasepool {
+                    // The row runs from close relatives to bolder ones.
+                    let amount = 0.6 + 1.2 * Double(i) / Double(max(1, count - 1))
+                    let varied = TrialGenerator.vary(art, materials: materials, seed: seed &+ UInt64(i + 1), amount: amount)
+                    guard let image = renderer.render(varied, longEdge: 480) else { return nil }
+                    return Trial(number: 0, style: style, art: varied, thumbnail: image)
+                }
+                guard let trial else { continue }
+                produced += 1; let first = produced == 1
+                DispatchQueue.main.async {
+                    guard self.trialJob === task, !task.cancelled else { return }
+                    if first { self.groups.insert(group, at: 0) }
+                    self.append(trial, to: group)
+                    self.trialMessage = "Making variations · \(self.trialProgress) of \(count)"
+                }
+            }
+            DispatchQueue.main.async {
+                guard self.trialJob === task, !task.cancelled else { return }
+                self.makingTrials = false
+                self.trialMessage = "\(produced) variations of \(base.title)"
+                if produced == 0 { self.error = "The variations couldn’t render. Your previews are unchanged." }
+                self.status = self.trialMessage
+            }
+        }
+    }
+
+    /// Copies a full-size PNG of a preview (or the open refinement) to the clipboard.
+    func copyImage(of id: UUID? = nil) {
+        storeActiveTrial()
+        guard !copying, let id = id ?? activeTrialID ?? gridSelection,
+              let trial = trials.first(where: { $0.id == id }) else { return }
+        copying = true
+        let snapshot = trial.art, title = trial.title
+        exportQueue.async { [weak self] in
+            guard let self else { return }
+            let data: (png: Data, tiff: Data?)? = autoreleasepool {
+                guard let cg = self.exportRenderer.render(snapshot, longEdge: 2400) else { return nil }
+                let rep = NSBitmapImageRep(cgImage: cg)
+                guard let png = rep.representation(using: .png, properties: [:]) else { return nil }
+                return (png, rep.tiffRepresentation)
+            }
+            DispatchQueue.main.async {
+                self.copying = false
+                guard let data else { self.error = "Couldn’t copy the image."; return }
+                let item = NSPasteboardItem()
+                item.setData(data.png, forType: .png)
+                if let tiff = data.tiff { item.setData(tiff, forType: .tiff) }
+                self.pasteboard.clearContents(); self.pasteboard.writeObjects([item])
+                self.status = "Copied \(title)"
+            }
+        }
+    }
+
+    /// A lazily rendered 2400-pixel PNG for dragging a preview into Finder or another app.
+    func dragProvider(for id: UUID) -> NSItemProvider {
+        storeActiveTrial()
+        let provider = NSItemProvider()
+        guard let trial = trials.first(where: { $0.id == id }) else { return provider }
+        let snapshot = trial.art, name = "Meld \(trial.title)"
+        provider.suggestedName = name
+        provider.registerFileRepresentation(forTypeIdentifier: UTType.png.identifier, fileOptions: [], visibility: .all) { completion in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("Meld drag \(UUID().uuidString.prefix(8))", isDirectory: true)
+                    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                    let url = folder.appendingPathComponent("\(name).png")
+                    try autoreleasepool {
+                        guard let cg = Renderer().render(snapshot, longEdge: 2400),
+                              let png = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:]) else { throw CocoaError(.fileWriteUnknown) }
+                        try png.write(to: url)
+                    }
+                    completion(url, false, nil)
+                } catch { completion(nil, false, error) }
+            }
+            return nil
+        }
+        return provider
     }
     func toggleFavourite(_ id: UUID) {
         if favouriteTrials.contains(id) { favouriteTrials.remove(id) }
@@ -598,7 +792,7 @@ final class Studio: ObservableObject {
         preview = NSImage(cgImage: trial.thumbnail, size: .zero)
         art = trial.art; refinement = trial.refinement
         history = []; future = []; refinementHistory = []; refinementFuture = []; lastKey = ""
-        activeTrialID = id; stage = .refine; revision += 1
+        activeTrialID = id; gridSelection = id; stage = .refine; revision += 1; palette = []
         selected = trial.art.layers.first(where: { $0.material == .image })?.id
         comparing = false; schedule()
         surpriseRevision += 1; status = trial.title
@@ -661,8 +855,8 @@ final class Studio: ObservableObject {
         exportingTrials = true; trialExportProgress = 0; trialExportTotal = chosen.count
         exportQueue.async { [weak self] in
             guard let self else { return }
-            let formatter = DateFormatter(); formatter.dateFormat = "yyyy-MM-dd HH.mm.ss"
-            let folder = parent.appendingPathComponent("Meld trials \(formatter.string(from: Date())) \(UUID().uuidString.prefix(6))", isDirectory: true)
+            let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.dateFormat = "yyyy-MM-dd HH.mm.ss"
+            let folder = parent.appendingPathComponent("Meld picks \(formatter.string(from: Date())) \(UUID().uuidString.prefix(6))", isDirectory: true)
             let renderer = self.exportRenderer
             defer { renderer.context.clearCaches() }
             var completed = 0
@@ -695,24 +889,27 @@ final class Studio: ObservableObject {
                 }
                 DispatchQueue.main.async {
                     self.exportingTrials = false
-                    self.status = "\(task.cancelled ? "Stopped export; saved" : "Exported") \(completed) trials in \(folder.lastPathComponent)"
+                    self.status = "\(task.cancelled ? "Stopped export; saved" : "Exported") \(completed) preview\(completed == 1 ? "" : "s") in \(folder.lastPathComponent)"
                     self.trialMessage = self.status
                 }
             } catch {
                 DispatchQueue.main.async {
                     self.exportingTrials = false
-                    self.error = "Couldn’t finish exporting trials: \(error.localizedDescription). \(completed) PNGs were saved in \(folder.lastPathComponent)."
+                    self.error = "Couldn’t finish exporting picks: \(error.localizedDescription). \(completed) PNGs were saved in \(folder.lastPathComponent)."
                 }
             }
         }
     }
     func cancelTrialExport() { trialExportJob.cancel() }
     func export() {
-        NSApp.activate(ignoringOtherApps: true)
-        let p = NSSavePanel(); p.allowedContentTypes = [.png]; p.nameFieldStringValue = "Meld.png"
-        p.message = "Export your artwork as a PNG (2400 pixels on the longest side)"
-        guard p.runModal() == .OK, let url = p.url else { return }
-        export(to: url)
+        let p = NSSavePanel(); p.allowedContentTypes = [.png]
+        p.nameFieldStringValue = "Meld \(activeTrial?.title ?? "image").png"
+        p.message = "Export this preview as a PNG (2400 pixels on the longest side)"
+        if let window = NSApp.keyWindow ?? NSApp.mainWindow {
+            p.beginSheetModal(for: window) { [weak self] response in
+                if response == .OK, let url = p.url { self?.export(to: url) }
+            }
+        } else if p.runModal() == .OK, let url = p.url { export(to: url) }
     }
     func export(to url: URL) {
         guard !exporting else { return }

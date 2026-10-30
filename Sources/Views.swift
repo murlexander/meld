@@ -88,12 +88,55 @@ struct RefinementView: View {
                              defaultValue: studio.activeTrial?.original.warp.saturation ?? 1, format: .percent)
                         dial("Contrast", value: warpValue(\.contrast, "contrast"), range: 0.5...1.5,
                              defaultValue: studio.activeTrial?.original.warp.contrast ?? 1, format: .percent)
-                        Button("Reset preview") { studio.resetActiveTrial() }.modifier(StudioButtons())
+                        HStack(spacing: 8) {
+                            Button("Reset preview") { studio.resetActiveTrial() }
+                            Button("Variations") { if let id = studio.activeTrialID { studio.makeVariations(of: id) } }
+                                .help("Make 12 variations of this preview, including your adjustments")
+                                .disabled(studio.makingTrials || studio.exportingTrials)
+                        }.modifier(StudioButtons())
                     }
+                    Divider()
+                    studySection
+                    paletteSection
                     Divider()
                     Button(detailed ? "Simple controls" : "More controls…") { detailed.toggle() }
                         .buttonStyle(.plain).foregroundStyle(.secondary)
                 }.font(.system(size: 13)).controlSize(.regular).padding(.horizontal, 18).padding(.bottom, 18)
+            }
+        }
+    }
+    private var studySection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("View").font(.headline)
+            Picker("View", selection: Binding(get: { studio.study }, set: { studio.setStudy($0) })) {
+                ForEach(Study.allCases) { Text($0.rawValue).tag($0) }
+            }.pickerStyle(.segmented).labelsHidden()
+                .help("Values and Notan only change the view; exports stay in colour")
+        }
+    }
+    @ViewBuilder private var paletteSection: some View {
+        if !studio.palette.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Palette").font(.headline)
+                    Spacer()
+                    Button("Copy") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(studio.palette.map(\.hex).joined(separator: "\n"), forType: .string)
+                    }.buttonStyle(.link).help("Copy all colours as hex values")
+                }
+                HStack(spacing: 6) {
+                    ForEach(Array(studio.palette.enumerated()), id: \.offset) { _, ink in
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(ink.hex, forType: .string)
+                        } label: {
+                            RoundedRectangle(cornerRadius: 5).fill(ink.color)
+                                .overlay { RoundedRectangle(cornerRadius: 5).strokeBorder(.separator) }
+                                .frame(height: 30)
+                        }.buttonStyle(.plain).help("\(ink.hex) · click to copy").accessibilityLabel("Colour \(ink.hex)")
+                    }
+                }
             }
         }
     }
@@ -106,8 +149,17 @@ struct RefinementView: View {
             ToolbarItem(placement: .principal) { toolbarTitle }
         }
         ToolbarItem(placement: .navigation) {
-            Button { studio.showTrials() } label: { Label("Previews", systemImage: "chevron.left") }
-                .help("Return to all previews; adjustments stay with this one")
+            Button { studio.showTrials() } label: { Label("Previews", systemImage: "square.grid.2x2") }
+                .keyboardShortcut(.cancelAction)
+                .help("Return to all previews (Esc); adjustments stay with this one")
+        }
+        ToolbarItem(placement: .navigation) {
+            ControlGroup {
+                Button { studio.openAdjacentTrial(-1) } label: { Label("Previous preview", systemImage: "chevron.left") }
+                    .disabled(!studio.canOpenPrevious).help("Previous preview (⌘[)")
+                Button { studio.openAdjacentTrial(1) } label: { Label("Next preview", systemImage: "chevron.right") }
+                    .disabled(!studio.canOpenNext).help("Next preview (⌘])")
+            }
         }
         ToolbarItemGroup {
             Button { studio.undo() } label: { Image(systemName: "arrow.uturn.backward") }

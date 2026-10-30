@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     init() {
         if CommandLine.arguments.contains("--self-test") { SelfTest.run(); exit(0) }
         if CommandLine.arguments.contains("--benchmark") { Benchmark.run() }
+        if CommandLine.arguments.contains("--ui-snapshot") { UISnapshot.run() }
         let isolated = CommandLine.arguments.contains("--ui-test")
         let model = Studio(restoreSource: !isolated, starter: false)
         if isolated, let i = CommandLine.arguments.firstIndex(of: "--ui-test-source"), i+1 < CommandLine.arguments.count {
@@ -32,6 +33,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     Button("Generate 36 previews") { studio.makeTrials() }.keyboardShortcut("r")
                         .disabled(studio.sourceFolder == nil || studio.materialsBusy || studio.makingTrials || studio.exportingTrials)
                     Button("Back to previews") { studio.showTrials() }.disabled(studio.trials.isEmpty)
+                    Button("Make 12 Variations") {
+                        if let id = studio.activeTrialID ?? studio.gridSelection { studio.makeVariations(of: id) }
+                    }.keyboardShortcut("r", modifiers: [.command, .option])
+                        .disabled((studio.activeTrialID ?? studio.gridSelection) == nil || studio.materialsBusy || studio.makingTrials || studio.exportingTrials)
                     Divider()
                     Button("Export picks…") { studio.exportTrials() }
                         .disabled(studio.favouriteTrials.isEmpty || studio.makingTrials || studio.exportingTrials)
@@ -39,6 +44,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 CommandGroup(replacing: .saveItem) {
                     Button("Export PNG…") { studio.export() }.keyboardShortcut("e")
                         .disabled(studio.activeTrialID == nil || studio.exporting)
+                }
+                CommandGroup(after: .pasteboard) {
+                    Divider()
+                    Button("Copy Image") { studio.copyImage() }.keyboardShortcut("c", modifiers: [.command, .shift])
+                        .disabled((studio.activeTrialID ?? studio.gridSelection) == nil || studio.copying)
+                }
+                CommandGroup(before: .toolbar) {
+                    ForEach(Array(Study.allCases.enumerated()), id: \.element) { index, study in
+                        Toggle("\(study.rawValue) View", isOn: Binding(get: { studio.study == study }, set: { if $0 { studio.setStudy(study) } }))
+                            .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
+                            .disabled(studio.stage != .refine)
+                    }
+                    Divider()
+                }
+                CommandMenu("Preview") {
+                    Button("Previous Preview") { studio.openAdjacentTrial(-1) }.keyboardShortcut("[", modifiers: .command)
+                        .disabled(studio.stage != .refine || !studio.canOpenPrevious)
+                    Button("Next Preview") { studio.openAdjacentTrial(1) }.keyboardShortcut("]", modifiers: .command)
+                        .disabled(studio.stage != .refine || !studio.canOpenNext)
+                    Divider()
+                    Button((studio.activeTrialID ?? studio.gridSelection).map { studio.favouriteTrials.contains($0) } == true ? "Remove from Picks" : "Add to Picks") {
+                        if let id = studio.activeTrialID ?? studio.gridSelection { studio.toggleFavourite(id) }
+                    }.disabled((studio.activeTrialID ?? studio.gridSelection) == nil)
+                    Toggle("Show Picks Only", isOn: $studio.picksOnly).disabled(studio.trials.isEmpty)
                 }
                 CommandGroup(replacing: .undoRedo) {
                     Button("Undo") { studio.undo() }.keyboardShortcut("z").disabled(studio.stage != .refine || !studio.canUndo)
