@@ -89,7 +89,24 @@ enum FeatureTests {
         studio.openTrial(firstPicks[0])
         studio.openAdjacentTrial(1)
         check(studio.activeTrialID == firstPicks[1] && !studio.canOpenNext, "with Picks shown, navigation moves only between picks")
+        studio.setPick(firstPicks[1], false)
+        check(studio.activeTrialID == firstPicks[1] && studio.canOpenPrevious && !studio.canOpenNext,
+              "removing the open preview's pick keeps previous/next working")
+        studio.setPick(firstPicks[1], true)
+        studio.showTrials()
+        studio.gridSelection = firstPicks[0]
+        studio.setPick(firstPicks[0], false)
+        check(studio.gridSelection == firstPicks[1], "unpicking a hidden selection moves it to the nearest visible pick")
+        studio.setPick(firstPicks[0], true)
         studio.picksOnly = false
+        studio.gridSelection = ordered[5].id
+        studio.picksOnly = true
+        check(studio.gridSelection.map { studio.favouriteTrials.contains($0) } == true, "showing picks keeps a visible selection")
+        studio.picksOnly = false
+        studio.chooseMaterial()
+        check(studio.commandTarget == nil && !studio.canMakeVariations, "menu commands have no hidden target at source selection")
+        studio.showTrials()
+        studio.openTrial(firstPicks[1])
 
         // Value studies change only the displayed preview.
         studio.change("saturation") { $0.warp.saturation = 1.6 }

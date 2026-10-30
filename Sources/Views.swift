@@ -16,7 +16,7 @@ struct StudioView: View {
             switch studio.stage {
             case .material: MaterialView(studio: studio)
             case .previews: TrialsView(studio: studio)
-            case .refine: RefinementView(studio: studio).id(studio.activeTrialID)
+            case .refine: RefinementView(studio: studio)
             }
         }.frame(minWidth: 1050, minHeight: 700)
             .tint(accent).accentColor(accent)
@@ -35,6 +35,8 @@ struct RefinementView: View {
     @ViewState private var columns: NavigationSplitViewVisibility = .detailOnly
     @ViewState private var dropTarget = false
     @ViewState private var statusHint: String?
+    @FocusState private var editingName: Bool
+    @ViewState private var shownTrialID: UUID?
     var body: some View {
         NavigationSplitView(columnVisibility: $columns) {
             sidebar.navigationSplitViewColumnWidth(min: 235, ideal: 250, max: 290)
@@ -52,7 +54,12 @@ struct RefinementView: View {
         .tint(accent).accentColor(accent)
         .toolbar(removing: .sidebarToggle)
         .onChange(of: detailed) { _, expanded in columns = expanded ? .all : .detailOnly }
-        .onChange(of: studio.selected) { _, _ in activePanel = .layers }
+        .onAppear { shownTrialID = studio.activeTrialID }
+        .onChange(of: studio.selected) { _, _ in
+            // Opening another preview selects its image layer; that should not switch panels.
+            if shownTrialID != studio.activeTrialID { shownTrialID = studio.activeTrialID; activePanel = .adjust }
+            else { activePanel = .layers }
+        }
         .onChange(of: studio.surpriseRevision) { _, _ in activePanel = .adjust }
         .onChange(of: studio.status) { _, message in statusHint = message }
         .task(id: statusHint) {
@@ -92,7 +99,7 @@ struct RefinementView: View {
                             Button("Reset preview") { studio.resetActiveTrial() }
                             Button("Variations") { if let id = studio.activeTrialID { studio.makeVariations(of: id) } }
                                 .help("Make 12 variations of this preview, including your adjustments")
-                                .disabled(studio.makingTrials || studio.exportingTrials)
+                                .disabled(!studio.canMakeVariations)
                         }.modifier(StudioButtons())
                     }
                     Divider()
@@ -150,7 +157,7 @@ struct RefinementView: View {
         }
         ToolbarItem(placement: .navigation) {
             Button { studio.showTrials() } label: { Label("Previews", systemImage: "square.grid.2x2") }
-                .keyboardShortcut(.cancelAction)
+                .keyboardShortcut(editingName ? nil : .cancelAction)
                 .help("Return to all previews (Esc); adjustments stay with this one")
         }
         ToolbarItem(placement: .navigation) {
@@ -293,6 +300,8 @@ struct RefinementView: View {
                         }
                     })
         }
+        // Each preview opens at Fit; panels and inspector stay as arranged.
+        .id(studio.activeTrialID)
         .background(Color(nsColor: .windowBackgroundColor))
         .overlay(alignment: .bottom) {
             if studio.materialsBusy || studio.rendering || studio.exporting || studio.comparing || statusHint != nil {
@@ -321,7 +330,7 @@ struct RefinementView: View {
         if let layer = studio.current {
             VStack(alignment: .leading, spacing: 10) {
                 TextField("Layer name", text: Binding(get: { studio.current?.name ?? "" }, set: { value in studio.updateLayer("name") { $0.name = value } }))
-                    .textFieldStyle(.roundedBorder).font(.system(size: 14, weight: .semibold))
+                    .textFieldStyle(.roundedBorder).font(.system(size: 14, weight: .semibold)).focused($editingName)
                 Picker("Blend", selection: Binding(get: { studio.current?.blend ?? .normal }, set: { value in studio.updateLayer("blend") { $0.blend = value } })) {
                     ForEach(Blend.allCases, id: \.self) { Text($0.label).tag($0) }
                 }

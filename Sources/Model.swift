@@ -96,7 +96,7 @@ final class Studio: ObservableObject {
     /// Grid rows, newest first. A new set keeps earlier picks in their original rows.
     @Published private(set) var groups: [TrialGroup] = []
     @Published var gridSelection: UUID?
-    @Published var picksOnly = false
+    @Published var picksOnly = false { didSet { keepSelectionVisible() } }
     /// Main colours of the refined preview as displayed (before any value study).
     @Published private(set) var palette: [Ink] = []
     @Published private(set) var study = Study.colour
@@ -163,6 +163,8 @@ final class Studio: ObservableObject {
     private let batchRenderer = Renderer()
     private let exportQueue = DispatchQueue(label: "Meld.export", qos: .userInitiated)
     private let exportRenderer = Renderer()
+    /// Core Image contexts are thread-safe; drags share one instead of creating a context each time.
+    private let dragRenderer = Renderer()
     var current: Layer? { art.layers.first { $0.id == selected } }
     var canUndo: Bool { !history.isEmpty }
     var canRedo: Bool { !future.isEmpty }
@@ -521,6 +523,7 @@ final class Studio: ObservableObject {
     }
     func chooseMaterial() {
         cancelTrials()
+        gridSelection = nil
         storeActiveTrial(); cancelPreview(); activeTrialID = nil; stage = .material
     }
     func makeTrials(count: Int = 36) {
@@ -666,20 +669,19 @@ final class Studio: ObservableObject {
     }
     /// Opens the neighbouring visible preview from refinement.
     func openAdjacentTrial(_ step: Int) {
-        guard let id = activeTrialID else { return }
-        let visible = visibleTrials
-        guard let index = visible.firstIndex(where: { $0.id == id }) else { return }
-        let next = index + step
-        guard visible.indices.contains(next) else { return }
-        openTrial(visible[next].id)
+        if let id = adjacentTrial(step) { openTrial(id) }
     }
-    var canOpenPrevious: Bool { adjacentAvailable(-1) }
-    var canOpenNext: Bool { adjacentAvailable(1) }
-    private func adjacentAvailable(_ step: Int) -> Bool {
-        guard let id = activeTrialID, !makingTrials else { return false }
-        let visible = visibleTrials
-        guard let index = visible.firstIndex(where: { $0.id == id }) else { return false }
-        return visible.indices.contains(index + step)
+    var canOpenPrevious: Bool { adjacentTrial(-1) != nil }
+    var canOpenNext: Bool { adjacentTrial(1) != nil }
+    /// The next visible preview in grid order. The open preview itself may be hidden
+    /// (for example after removing its pick while Picks is shown).
+    private func adjacentTrial(_ step: Int) -> UUID? {
+        guard let id = activeTrialID, !makingTrials else { return nil }
+        let ordered = orderedTrials
+        guard let index = ordered.firstIndex(where: { $0.id == id }) else { return nil }
+        let visible = Set(visibleTrials.map(\.id))
+        let candidates = step > 0 ? Array(ordered[(index + 1)...]) : Array(ordered[..<index].reversed())
+        return candidates.first { visible.contains($0.id) }?.id
     }
     func setStudy(_ value: Study) {
         guard study != value else { return }
@@ -688,6 +690,7 @@ final class Studio: ObservableObject {
     }
 
     /// Twelve close relatives of one preview, added as a new row without decoding anything.
+    var canMakeVariations: Bool { commandTarget != nil && !materialsBusy && !makingTrials && !exportingTrials }
     func makeVariations(of id: UUID, count: Int = 12) {
         guard !materialsBusy, !makingTrials, !exportingTrials else { return }
         storeActiveTrial()
@@ -741,7 +744,7 @@ final class Studio: ObservableObject {
     /// Copies a full-size PNG of a preview (or the open refinement) to the clipboard.
     func copyImage(of id: UUID? = nil) {
         storeActiveTrial()
-        guard !copying, let id = id ?? activeTrialID ?? gridSelection,
+        guard !copying, let id = id ?? commandTarget,
               let trial = trials.first(where: { $0.id == id }) else { return }
         copying = true
         let snapshot = trial.art, title = trial.title
@@ -770,16 +773,22 @@ final class Studio: ObservableObject {
         storeActiveTrial()
         let provider = NSItemProvider()
         guard let trial = trials.first(where: { $0.id == id }) else { return provider }
-        let snapshot = trial.art, name = "Meld \(trial.title)"
+        let snapshot = trial.art, name = "Meld \(trial.title)", renderer = dragRenderer
         provider.suggestedName = name
         provider.registerFileRepresentation(forTypeIdentifier: UTType.png.identifier, fileOptions: [], visibility: .all) { completion in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
-                    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("Meld drag \(UUID().uuidString.prefix(8))", isDirectory: true)
+                    // One temporary folder; earlier drags are removed once receivers have had time to copy them.
+                    let root = FileManager.default.temporaryDirectory.appendingPathComponent("Meld drag", isDirectory: true)
+                    let old = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.creationDateKey])) ?? []
+                    for item in old where ((try? item.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast) < Date().addingTimeInterval(-600) {
+                        try? FileManager.default.removeItem(at: item)
+                    }
+                    let folder = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
                     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
                     let url = folder.appendingPathComponent("\(name).png")
                     try autoreleasepool {
-                        guard let cg = Renderer().render(snapshot, longEdge: 2400),
+                        guard let cg = renderer.render(snapshot, longEdge: 2400),
                               let png = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:]) else { throw CocoaError(.fileWriteUnknown) }
                         try png.write(to: url)
                     }
@@ -793,6 +802,24 @@ final class Studio: ObservableObject {
     func toggleFavourite(_ id: UUID) {
         if favouriteTrials.contains(id) { favouriteTrials.remove(id) }
         else if trials.contains(where: { $0.id == id }) { favouriteTrials.insert(id) }
+        keepSelectionVisible()
+    }
+    /// The preview that menu commands act on: the open one, or the grid selection.
+    var commandTarget: UUID? {
+        switch stage {
+        case .refine: return activeTrialID
+        case .previews: return gridSelection
+        case .material: return nil
+        }
+    }
+    /// When a pick change or the Picks filter hides the selection, select its nearest visible neighbour.
+    private func keepSelectionVisible() {
+        guard stage == .previews, let id = gridSelection else { return }
+        let visible = Set(visibleTrials.map(\.id))
+        guard !visible.contains(id) else { return }
+        let ordered = orderedTrials
+        guard let index = ordered.firstIndex(where: { $0.id == id }) else { gridSelection = nil; return }
+        gridSelection = (ordered[index...].first { visible.contains($0.id) } ?? ordered[..<index].last { visible.contains($0.id) })?.id
     }
     func openTrial(_ id: UUID) {
         guard !makingTrials else { return }

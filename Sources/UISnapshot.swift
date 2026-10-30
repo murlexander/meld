@@ -45,6 +45,7 @@ enum UISnapshot {
         }
         snap("1-material")
         studio.makeTrials(); wait { !studio.makingTrials }
+        guard studio.trials.count >= 10 else { fputs("The source folder produced too few previews\n", stderr); exit(1) }
         studio.toggleFavourite(studio.trials[2].id); studio.toggleFavourite(studio.trials[9].id)
         studio.makeTrials(); wait { !studio.makingTrials }
         studio.gridSelection = studio.orderedTrials[1].id

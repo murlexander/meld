@@ -8,16 +8,15 @@ Meld turns a folder of photographs and textures into many abstract possibilities
 - Variations: 12 relatives of any preview, including its adjustments, without decoding sources again.
 - Photos-style grid with keyboard culling (arrows, Return, F/D, V) and previous/next in refinement.
 - Values and Notan views, palette swatches with hex copy, palettes on contact sheets.
-- Copy Image and drag-out at 2400 pixels.
+- Copy Image and drag-out at 2400 pixels; grid thumbnail sizes (⌘+ / ⌘−).
 - Faster generation and export through parallel decoding, rendering and PNG encoding.
 
 ## Next
 
 1. **Larger exports.** Offer 4800 pixels or a print size. Working copies stop at 2400 pixels, so export would decode the sources again at the larger size.
-2. **Thumbnail size.** A grid zoom (⌘+ / ⌘−) as in Photos and Louppe.
-3. **Variation focus.** Let a variation row vary one thing: composition, colour, or pattern.
-4. **Recipe card.** Export a small text or JSON file beside each PNG with its sources, style and settings, so a pick can be rendered again later.
-5. **New styles.** Halftone, gradient map, slit-scan and mosaic families, each tested for distinct output like the existing six.
+2. **Variation focus.** Let a variation row vary one thing: composition, colour, or pattern.
+3. **Recipe card.** Export a small text or JSON file beside each PNG with its sources, style and settings, so a pick can be rendered again later.
+4. **New styles.** Halftone, gradient map, slit-scan and mosaic families, each tested for distinct output like the existing six.
 
 ## Decisions for Alex
 

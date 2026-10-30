@@ -34,9 +34,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         .disabled(studio.sourceFolder == nil || studio.materialsBusy || studio.makingTrials || studio.exportingTrials)
                     Button("Back to previews") { studio.showTrials() }.disabled(studio.trials.isEmpty)
                     Button("Make 12 Variations") {
-                        if let id = studio.activeTrialID ?? studio.gridSelection { studio.makeVariations(of: id) }
+                        if let id = studio.commandTarget { studio.makeVariations(of: id) }
                     }.keyboardShortcut("r", modifiers: [.command, .option])
-                        .disabled((studio.activeTrialID ?? studio.gridSelection) == nil || studio.materialsBusy || studio.makingTrials || studio.exportingTrials)
+                        .disabled(!studio.canMakeVariations)
                     Divider()
                     Button("Export picks…") { studio.exportTrials() }
                         .disabled(studio.favouriteTrials.isEmpty || studio.makingTrials || studio.exportingTrials)
@@ -48,7 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 CommandGroup(after: .pasteboard) {
                     Divider()
                     Button("Copy Image") { studio.copyImage() }.keyboardShortcut("c", modifiers: [.command, .shift])
-                        .disabled((studio.activeTrialID ?? studio.gridSelection) == nil || studio.copying)
+                        .disabled(studio.commandTarget == nil || studio.copying)
                 }
                 CommandGroup(before: .toolbar) {
                     Button("Larger Thumbnails") { studio.zoomThumbnails(1) }.keyboardShortcut("+", modifiers: .command)
@@ -69,9 +69,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     Button("Next Preview") { studio.openAdjacentTrial(1) }.keyboardShortcut("]", modifiers: .command)
                         .disabled(studio.stage != .refine || !studio.canOpenNext)
                     Divider()
-                    Button((studio.activeTrialID ?? studio.gridSelection).map { studio.favouriteTrials.contains($0) } == true ? "Remove from Picks" : "Add to Picks") {
-                        if let id = studio.activeTrialID ?? studio.gridSelection { studio.toggleFavourite(id) }
-                    }.disabled((studio.activeTrialID ?? studio.gridSelection) == nil)
+                    Button(studio.commandTarget.map { studio.favouriteTrials.contains($0) } == true ? "Remove from Picks" : "Add to Picks") {
+                        if let id = studio.commandTarget { studio.toggleFavourite(id) }
+                    }.disabled(studio.commandTarget == nil)
                     Toggle("Show Picks Only", isOn: $studio.picksOnly).disabled(studio.trials.isEmpty)
                 }
                 CommandGroup(replacing: .undoRedo) {

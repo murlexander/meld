@@ -49,20 +49,29 @@ struct TrialsView: View {
         VStack(spacing: 0) {
             header
             Divider()
-            GeometryReader { geometry in
+            Group {
                 ScrollViewReader { proxy in
                     ScrollView {
-                        if studio.visibleTrials.isEmpty { emptyState } else { grid }
+                        if studio.visibleTrials.isEmpty { emptyState } else {
+                            // Measure inside the scroll view so a visible scroller is excluded.
+                            grid.background { GeometryReader { content in
+                                Color.clear
+                                    .onAppear { columns = columnCount(content.size.width) }
+                                    .onChange(of: content.size.width) { _, width in columns = columnCount(width) }
+                                    .onChange(of: studio.thumbnailSize) { _, _ in columns = columnCount(content.size.width) }
+                            }}
+                        }
                     }
                     .onChange(of: studio.gridSelection) { _, id in
                         guard let id else { return }
                         withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(id) }
                     }
-                    .onAppear { if let id = studio.gridSelection { proxy.scrollTo(id, anchor: .center) } }
+                    .task {
+                        // Wait for the first layout so the selected row exists before scrolling.
+                        try? await Task.sleep(for: .milliseconds(30))
+                        if let id = studio.gridSelection { proxy.scrollTo(id, anchor: .center) }
+                    }
                 }
-                .onAppear { columns = columnCount(geometry.size.width) }
-                .onChange(of: geometry.size.width) { _, width in columns = columnCount(width) }
-                .onChange(of: studio.thumbnailSize) { _, _ in columns = columnCount(geometry.size.width) }
             }
             .focusable().focused($gridFocused).focusEffectDisabled()
             .onKeyPress(keys: [.leftArrow, .rightArrow, .upArrow, .downArrow, .return, .space]) { press in
@@ -76,12 +85,17 @@ struct TrialsView: View {
                 return .handled
             }
             // Louppe's culling keys: F picks, D removes the pick.
-            .onKeyPress(characters: CharacterSet(charactersIn: "fdvFDV")) { press in
-                guard press.modifiers.isEmpty || press.modifiers == .shift, let id = studio.gridSelection else { return .ignored }
+            // Russian-layout letters on the same keys (а, в, м) work too; Caps Lock is ignored.
+            .onKeyPress(characters: CharacterSet(charactersIn: "fdvFDVавмАВМ=")) { press in
+                if press.characters == "=" {
+                    guard press.modifiers.subtracting(.capsLock) == .command else { return .ignored }
+                    studio.zoomThumbnails(1); return .handled // ⌘= without Shift, as in Photos
+                }
+                guard press.modifiers.subtracting([.shift, .capsLock]).isEmpty, let id = studio.gridSelection else { return .ignored }
                 switch press.characters.lowercased() {
-                case "f": studio.setPick(id, true)
-                case "d": studio.setPick(id, false)
-                default: studio.makeVariations(of: id)
+                case "f", "а": studio.setPick(id, true)
+                case "d", "в": studio.setPick(id, false)
+                default: if studio.canMakeVariations { studio.makeVariations(of: id) }
                 }
                 return .handled
             }
@@ -106,7 +120,7 @@ struct TrialsView: View {
                 Button { if let id = studio.gridSelection { studio.makeVariations(of: id) } } label: {
                     Label("Variations", systemImage: "square.stack.3d.down.right")
                 }
-                .disabled(studio.gridSelection == nil || studio.makingTrials || studio.exportingTrials)
+                .disabled(!studio.canMakeVariations)
                 .help("Make 12 variations of the selected preview (V)")
                 if studio.makingTrials {
                     ProgressView().controlSize(.small)
@@ -146,7 +160,7 @@ struct TrialsView: View {
     }
 
     private var grid: some View {
-        LazyVStack(alignment: .leading, spacing: 26) {
+        VStack(alignment: .leading, spacing: 26) {
             ForEach(studio.groups) { group in
                 let items = studio.visibleTrials.filter { $0.group == group.id }
                 if !items.isEmpty {
@@ -197,9 +211,9 @@ struct TrialsView: View {
             Button("Refine") { studio.openTrial(trial.id) }.disabled(studio.makingTrials)
             Button(picked ? "Remove from picks" : "Add to picks") { studio.toggleFavourite(trial.id) }
             Button("Make 12 variations") { studio.makeVariations(of: trial.id) }
-                .disabled(studio.makingTrials || studio.exportingTrials)
+                .disabled(studio.materialsBusy || studio.makingTrials || studio.exportingTrials)
             Divider()
-            Button("Copy image") { studio.copyImage(of: trial.id) }
+            Button("Copy image") { studio.copyImage(of: trial.id) }.disabled(studio.copying)
         }
     }
 
