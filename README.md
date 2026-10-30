@@ -24,7 +24,7 @@ The generator explores Flow, Vortex, Blocks, Collage, Weave, and mirrored Tiles,
 
 The interface uses native macOS controls, Liquid Glass on macOS 26+, and a restrained teal accent. Image processing runs locally; original source files are not modified.
 
-Where Meld could go next is in [Roadmap](docs/ROADMAP.md).
+Planned work is in the [backlog](docs/BACKLOG.md).
 
 ## Build
 

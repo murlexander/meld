@@ -1,6 +1,6 @@
-# Meld roadmap
+# Meld backlog
 
-Meld turns a folder of photographs and textures into many abstract possibilities, then helps narrow them to a few painting references. The core loop is **generate → cull → vary → refine → export**. Each direction below should make that loop faster or its results more useful to a painter.
+Meld turns a folder of photographs and textures into many abstract possibilities, then helps narrow them to a few painting references. Meld is a personal tool for Alex; there are no plans to distribute it. The core loop is **generate → cull → vary → refine → export**. Each direction below should make that loop faster or its results more useful to a painter.
 
 ## 0.6 — October 2026
 
@@ -22,8 +22,8 @@ Meld turns a folder of photographs and textures into many abstract possibilities
 
 - **Session recovery.** Meld is deliberately export-only, with no save prompt. A quiet automatic recovery of the last session (no documents, no prompt) would remove the main remaining way to lose picks. Worth doing?
 - **Louppe bridge.** Use Louppe's Yes items as Meld material, and send Meld exports back into the Louppe archive. This is the "broader archive" direction in the README; it needs a shared file convention before code.
-- **Distribution.** A signed and notarised build would let others try Meld. That needs a Developer ID and a licence choice.
 
 ## Not planned
 
-Brush painting, masks and selection tools: Meld generates references; painting happens elsewhere.
+- Brush painting, masks and selection tools: Meld generates references; painting happens elsewhere.
+- Signed, notarised or public builds: Meld stays a local, ad hoc signed app.
