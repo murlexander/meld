@@ -43,7 +43,8 @@ struct TrialsView: View {
     @ObservedObject var studio: Studio
     @TrialState private var columns = 4
     @FocusState private var gridFocused: Bool
-    private let cellWidth: CGFloat = 170, spacing: CGFloat = 18, margin: CGFloat = 24
+    private var cellWidth: CGFloat { studio.thumbnailSize }
+    private let spacing: CGFloat = 18, margin: CGFloat = 24
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -61,6 +62,7 @@ struct TrialsView: View {
                 }
                 .onAppear { columns = columnCount(geometry.size.width) }
                 .onChange(of: geometry.size.width) { _, width in columns = columnCount(width) }
+                .onChange(of: studio.thumbnailSize) { _, _ in columns = columnCount(geometry.size.width) }
             }
             .focusable().focused($gridFocused).focusEffectDisabled()
             .onKeyPress(keys: [.leftArrow, .rightArrow, .upArrow, .downArrow, .return, .space]) { press in
@@ -125,7 +127,7 @@ struct TrialsView: View {
                     .lineLimit(1)
                 Spacer()
                 Text(studio.makingTrials ? "Refine when ready, or stop to explore these previews."
-                     : "Double-click to refine · F to pick, D to unpick · V for variations")
+                     : "Double-click to refine · F to pick, D to unpick · V for variations · ⌘+ ⌘− to resize")
             }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, margin).padding(.bottom, 14)
         }
     }
@@ -169,7 +171,7 @@ struct TrialsView: View {
         let picked = studio.favouriteTrials.contains(trial.id)
         return VStack(spacing: 8) {
             Image(decorative: trial.thumbnail, scale: 1).resizable().scaledToFit()
-                .frame(maxWidth: .infinity).frame(height: 158)
+                .frame(maxWidth: .infinity).frame(height: cellWidth - 12)
                 .background(Color(nsColor: .controlBackgroundColor))
                 .contentShape(Rectangle())
                 .onTapGesture(count: 2) { guard !studio.makingTrials else { return }; studio.openTrial(trial.id) }

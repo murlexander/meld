@@ -68,6 +68,15 @@ enum FeatureTests {
         studio.setPick(studio.orderedTrials[1].id, false)
         check(studio.favouriteTrials.count == 2, "D removes a pick")
 
+        let savedSize = UserDefaults.standard.object(forKey: "grid.thumbnailSize") as? Double
+        studio.zoomThumbnails(1); studio.zoomThumbnails(5)
+        check(studio.thumbnailSize == Studio.thumbnailSizes.last, "thumbnail zoom stops at the sharpest large size")
+        studio.zoomThumbnails(-9)
+        check(studio.thumbnailSize == Studio.thumbnailSizes.first, "thumbnail zoom stops at the smallest size")
+        check(UserDefaults.standard.object(forKey: "grid.thumbnailSize") as? Double == savedSize,
+              "test sessions leave the saved thumbnail size alone")
+        studio.zoomThumbnails(1)
+
         // Refinement navigation follows the visible order.
         let ordered = studio.orderedTrials
         studio.openTrial(ordered[0].id)

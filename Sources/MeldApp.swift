@@ -51,6 +51,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         .disabled((studio.activeTrialID ?? studio.gridSelection) == nil || studio.copying)
                 }
                 CommandGroup(before: .toolbar) {
+                    Button("Larger Thumbnails") { studio.zoomThumbnails(1) }.keyboardShortcut("+", modifiers: .command)
+                        .disabled(studio.stage != .previews || studio.thumbnailSize == Studio.thumbnailSizes.last)
+                    Button("Smaller Thumbnails") { studio.zoomThumbnails(-1) }.keyboardShortcut("-", modifiers: .command)
+                        .disabled(studio.stage != .previews || studio.thumbnailSize == Studio.thumbnailSizes.first)
+                    Divider()
                     ForEach(Array(Study.allCases.enumerated()), id: \.element) { index, study in
                         Toggle("\(study.rawValue) View", isOn: Binding(get: { studio.study == study }, set: { if $0 { studio.setStudy(study) } }))
                             .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)

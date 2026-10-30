@@ -101,6 +101,15 @@ final class Studio: ObservableObject {
     @Published private(set) var palette: [Ink] = []
     @Published private(set) var study = Study.colour
     @Published private(set) var copying = false
+    /// Grid thumbnail width in points; preview thumbnails are 480 pixels, sharp up to 240 points on Retina.
+    static let thumbnailSizes: [Double] = [130, 170, 210, 250]
+    @Published private(set) var thumbnailSize = 170.0
+    func zoomThumbnails(_ step: Int) {
+        let sizes = Self.thumbnailSizes
+        let index = sizes.firstIndex(of: thumbnailSize) ?? 1
+        thumbnailSize = sizes[min(sizes.count - 1, max(0, index + step))]
+        if restoreSource { UserDefaults.standard.set(thumbnailSize, forKey: "grid.thumbnailSize") }
+    }
     /// Tests use a private pasteboard so they never replace the user's clipboard.
     var pasteboard = NSPasteboard.general
     private var nextTrialNumber = 1
@@ -162,6 +171,8 @@ final class Studio: ObservableObject {
         self.restoreSource = restoreSource
         if starter { loadStarter(record: false) }
         if restoreSource {
+            let size = UserDefaults.standard.double(forKey: "grid.thumbnailSize")
+            if Self.thumbnailSizes.contains(size) { thumbnailSize = size }
             UserDefaults.standard.removeObject(forKey: "source.recursive")
             var stale = false
             if let data = UserDefaults.standard.data(forKey: "source.bookmark"),
