@@ -33,9 +33,9 @@ enum UISnapshot {
         window.contentView = host
         window.setFrame(CGRect(x: -30000, y: -30000, width: 1280, height: 820), display: false)
         window.orderBack(nil)
-        func snap(_ name: String, appearance: NSAppearance.Name = .aqua) {
+        func snap(_ name: String, appearance: NSAppearance.Name = .aqua, settle: TimeInterval = 0.6) {
             window.appearance = NSAppearance(named: appearance)
-            pump(0.6)
+            pump(settle)
             let view = window.contentView!.superview ?? window.contentView!
             guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
             view.cacheDisplay(in: view.bounds, to: rep)
@@ -44,8 +44,11 @@ enum UISnapshot {
             print("wrote \(url.path)")
         }
         snap("1-material")
-        studio.makeTrials(); wait { !studio.makingTrials }
+        studio.makeTrials()
+        snap("1a-generating", settle: 0.05)
+        wait { !studio.makingTrials }
         guard studio.trials.count >= 10 else { fputs("The source folder produced too few previews\n", stderr); exit(1) }
+        snap("1b-no-picks")
         studio.toggleFavourite(studio.trials[2].id); studio.toggleFavourite(studio.trials[9].id)
         studio.makeTrials(); wait { !studio.makingTrials }
         studio.gridSelection = studio.orderedTrials[1].id
@@ -54,12 +57,28 @@ enum UISnapshot {
         studio.gridSelection = studio.orderedTrials[0].id
         snap("3-variations")
         snap("3-variations-dark", appearance: .darkAqua)
+        let regularFrame = window.frame
+        window.setContentSize(CGSize(width: 1050, height: 700))
+        snap("3a-minimum")
+        snap("3a-minimum-dark", appearance: .darkAqua)
+        studio.picksOnly = true
+        snap("3b-picks-only")
+        studio.picksOnly = false
+        window.setFrame(regularFrame, display: false)
+        studio.exportTrials(studio.trials, to: output)
+        snap("3c-exporting")
+        studio.cancelTrialExport(); wait { !studio.exportingTrials }
+        snap("3d-export-status")
         studio.openTrial(studio.orderedTrials[0].id); wait { !studio.rendering }
         snap("4-refine")
         studio.setStudy(.notan); wait { !studio.rendering }
         snap("5-refine-notan")
         studio.setStudy(.colour); wait { !studio.rendering }
         snap("6-refine-dark", appearance: .darkAqua)
+        studio.showTrials()
+        snap("7-back-to-previews")
+        studio.chooseMaterial()
+        snap("8-back-to-material")
         window.close()
         exit(0)
     }

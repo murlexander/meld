@@ -160,6 +160,7 @@ struct RefinementView: View {
                 .keyboardShortcut(editingName ? nil : .cancelAction)
                 .help("Return to all previews (Esc); adjustments stay with this one")
         }
+        if #available(macOS 26.0, *) { ToolbarSpacer(.fixed, placement: .navigation) }
         ToolbarItem(placement: .navigation) {
             ControlGroup {
                 Button { studio.openAdjacentTrial(-1) } label: { Label("Previous preview", systemImage: "chevron.left") }
@@ -189,12 +190,16 @@ struct RefinementView: View {
             .help(inspectorVisible ? "Hide controls" : "Show controls")
         }
         if #available(macOS 26.0, *) { ToolbarSpacer(.fixed) }
+        pickAndExportToolbar
+    }
+    @ToolbarContentBuilder private var pickAndExportToolbar: some ToolbarContent {
         ToolbarItem {
             Button {
                 if let id = studio.activeTrialID { studio.toggleFavourite(id) }
             } label: { Image(systemName: studio.activeTrialID.map { studio.favouriteTrials.contains($0) } == true ? "star.fill" : "star") }
                 .accessibilityLabel("Pick this preview").help("Include this preview when exporting picks")
         }
+        if #available(macOS 26.0, *) { ToolbarSpacer(.fixed) }
         ToolbarItem {
             Button { studio.export() } label: {
                 Image(systemName: "square.and.arrow.up").offset(y: -1)

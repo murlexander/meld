@@ -47,8 +47,6 @@ struct TrialsView: View {
     private let spacing: CGFloat = 18, margin: CGFloat = 24
     var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider()
             Group {
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -101,49 +99,85 @@ struct TrialsView: View {
             }
             .onAppear { gridFocused = true }
             Divider()
-            Text("New sets keep your picks. Export them before closing Meld.")
-                .font(.caption).foregroundStyle(.secondary).padding(10)
-        }.background(Color(nsColor: .windowBackgroundColor)).navigationTitle("Meld")
+            HStack {
+                Text("New sets keep your picks. Export them before closing Meld.")
+                Spacer()
+                Text("Double-click to refine · F to pick, D to unpick · V for variations · ⌘+ ⌘− to resize")
+            }.font(.caption).foregroundStyle(.secondary).padding(10)
+        }.background(Color(nsColor: .windowBackgroundColor)).navigationTitle("")
+            .toolbar { toolbar }
             .onChange(of: studio.groups.first?.id) { _, _ in if studio.makingTrials { studio.picksOnly = false } }
     }
 
-    private var header: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 16) {
-                Button { studio.chooseMaterial() } label: {
-                    Label(studio.trialsFolder?.lastPathComponent ?? studio.sourceFolder?.lastPathComponent ?? "Source folder", systemImage: "folder")
-                        .lineLimit(1).truncationMode(.middle)
-                }.modifier(StudioButtons()).help("Choose material for the next set")
-                Spacer(minLength: 12)
-                Toggle(isOn: $studio.picksOnly) { Label("Picks \(studio.favouriteTrials.count)", systemImage: "star") }
-                    .toggleStyle(.button).accessibilityLabel("Show picks only")
-                Button { if let id = studio.gridSelection { studio.makeVariations(of: id) } } label: {
-                    Label("Variations", systemImage: "square.stack.3d.down.right")
-                }
-                .disabled(!studio.canMakeVariations)
-                .help("Make 12 variations of the selected preview (V)")
-                if studio.makingTrials {
-                    ProgressView().controlSize(.small)
-                    Button("Stop") { studio.cancelTrials() }
-                } else if studio.exportingTrials {
-                    ProgressView().controlSize(.small)
-                    Button("Stop export") { studio.cancelTrialExport() }
-                } else {
-                    Button("New 36 previews") { studio.makeTrials() }
-                        .disabled(studio.sourceFolder == nil || studio.materialsBusy)
-                        .help("Make a new set from the source folder; your picks stay")
-                    Button("Export picks…") { studio.exportTrials() }
-                        .modifier(StudioButtons(prominent: true)).disabled(studio.favouriteTrials.isEmpty)
-                }
-            }.buttonStyle(.bordered).controlSize(.large).padding(.horizontal, margin).padding(.vertical, 16)
-            HStack {
-                Text(studio.exportingTrials ? "Exporting \(studio.trialExportProgress) of \(studio.trialExportTotal)…" : studio.trialMessage)
-                    .lineLimit(1)
-                Spacer()
-                Text(studio.makingTrials ? "Refine when ready, or stop to explore these previews."
-                     : "Double-click to refine · F to pick, D to unpick · V for variations · ⌘+ ⌘− to resize")
-            }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, margin).padding(.bottom, 14)
+    // The window toolbar owns navigation and actions, as in Louppe.
+    @ToolbarContentBuilder private var toolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .navigation) {
+            Button { studio.chooseMaterial() } label: {
+                Label(studio.trialsFolder?.lastPathComponent ?? studio.sourceFolder?.lastPathComponent ?? "Source folder", systemImage: "folder")
+                    .labelStyle(.titleAndIcon).lineLimit(1).truncationMode(.middle).frame(maxWidth: 220)
+            }
+            .accessibilityLabel("Choose material")
+            .help("Choose material for the next set · \(studio.trialsFolder?.path ?? studio.sourceFolder?.path ?? "No source folder")")
         }
+        if #available(macOS 26.0, *) {
+            ToolbarItem(placement: .principal) { toolbarStatus }
+                .sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem(placement: .principal) { toolbarStatus }
+        }
+        ToolbarItemGroup {
+            Toggle(isOn: $studio.picksOnly) {
+                Image(systemName: studio.picksOnly ? "star.fill" : "star")
+            }
+            .toggleStyle(.button).accessibilityLabel("Show picks only")
+            .accessibilityValue("\(studio.favouriteTrials.count) picks")
+            .help(studio.picksOnly ? "Show all previews" : "Show \(studio.favouriteTrials.count) picked previews")
+            Button { if let id = studio.gridSelection { studio.makeVariations(of: id) } } label: {
+                Image(systemName: "square.stack.3d.down.right")
+            }
+            .disabled(!studio.canMakeVariations).accessibilityLabel("Make 12 variations")
+            .help("Make 12 variations of the selected preview (V)")
+        }
+        if #available(macOS 26.0, *) { ToolbarSpacer(.fixed) }
+        ToolbarItem {
+            if studio.makingTrials {
+                Button { studio.cancelTrials() } label: { Image(systemName: "stop.fill") }
+                    .accessibilityLabel("Stop generation").help("Stop and keep completed previews")
+            } else {
+                Button { studio.makeTrials() } label: { Image(systemName: "sparkles") }
+                    .disabled(studio.sourceFolder == nil || studio.materialsBusy || studio.exportingTrials)
+                    .accessibilityLabel("New 36 previews")
+                    .help("Make a new set from the source folder; your picks stay (⌘R)")
+            }
+        }
+        if #available(macOS 26.0, *) { ToolbarSpacer(.fixed) }
+        ToolbarItem {
+            if studio.exportingTrials {
+                Button { studio.cancelTrialExport() } label: { Image(systemName: "stop.fill") }
+                    .accessibilityLabel("Stop export").help("Stop and keep completed exports")
+            } else {
+                Button { studio.exportTrials() } label: {
+                    Image(systemName: "square.and.arrow.up").offset(y: -1)
+                }
+                .buttonStyle(.borderedProminent).buttonBorderShape(.circle)
+                .disabled(studio.favouriteTrials.isEmpty || studio.makingTrials || studio.materialsBusy)
+                .accessibilityLabel("Export picks").help("Export \(studio.favouriteTrials.count) picks as PNGs and a contact sheet")
+            }
+        }
+    }
+
+    private var toolbarStatus: some View {
+        VStack(spacing: 2) {
+            Text("\(studio.visibleTrials.count) previews · \(studio.favouriteTrials.count) picks")
+                .monospacedDigit()
+            HStack(spacing: 6) {
+                if studio.makingTrials || studio.exportingTrials { ProgressView().controlSize(.mini) }
+                Text(studio.exportingTrials
+                     ? "Exporting \(studio.trialExportProgress) of \(studio.trialExportTotal)…"
+                     : studio.trialMessage)
+            }
+        }.font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+            .frame(maxWidth: 320).help(studio.trialMessage)
     }
 
     private var emptyState: some View {
