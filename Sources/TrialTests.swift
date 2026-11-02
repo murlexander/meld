@@ -37,8 +37,11 @@ enum TrialTests {
         check(studio.error == nil && studio.trials.count == 36, "a folder creates 36 reviewable previews despite a corrupt RAW")
         check(studio.art == art && studio.selected == selection && studio.revision == revision,
               "making a batch leaves the working canvas, selection and undo history intact")
-        check(CompositionStyle.allCases.allSatisfy { style in studio.trials.filter { $0.style == style }.count == 6 },
-              "36 previews explore every composition style equally")
+        check(CompositionStyle.allCases.allSatisfy { style in (7...8).contains(studio.trials.filter { $0.style == style }.count) },
+              "36 previews explore every composition style evenly")
+        let ordered = studio.trials.sorted { $0.number < $1.number }.map(\.style)
+        check(stride(from: 0, to: 36, by: 6).allSatisfy { Set(ordered[$0..<$0 + 6]).count == CompositionStyle.allCases.count },
+              "every group of six previews explores all styles")
         check(Set(studio.trials.map { hash($0.thumbnail) }).count == 36, "all 36 generated previews differ")
         check(studio.trials.allSatisfy { $0.art.aspect == "Portrait" && $0.thumbnail.width == 384 && $0.thumbnail.height == 480 },
               "trial thumbnails preserve the chosen canvas shape")
@@ -60,6 +63,7 @@ enum TrialTests {
               "mirrored tiles change image geometry")
         check(prepared[0].colours.first!.luminance < prepared[0].colours.last!.luminance,
               "source palette retains light and dark colours")
+        try fullBleed(check: check)
         let noise = Layer(name: "Noise", material: .noise, frequency: 13.7)
         let smallNoise = Renderer.pattern(noise, w: 320, h: 320)!, largeNoise = Renderer.pattern(noise, w: 2400, h: 2400)!
         func pixel(_ image: CGImage, _ u: Double, _ v: Double) -> [UInt8] {
@@ -192,5 +196,108 @@ enum TrialTests {
             check(try Data(contentsOf: rawURL) == data, "RAW batch preserves the original bytes")
             try TrialGenerator.contactSheet(rawStudio.trials)!.write(to: output.appendingPathComponent("36-raw-previews.png"))
         }
+    }
+
+    /// Generated and varied layers always cover the canvas: no photo edges or background show.
+    static func fullBleed(check: (Bool, String) -> Void) throws {
+        // Independent of `Coverage`: map the canvas corners through the inverse of the
+        // Renderer's own layer transform and test them against the source extent.
+        func brute(r: Double, k: Double, scale: Double, rotation: Double, x: Double, y: Double) -> Bool {
+            let w = 1000 * r, h = 1000.0, extent = CGRect(x: 0, y: 0, width: 777 * k, height: 777)
+            let fit = max(w / extent.width, h / extent.height) * scale
+            let t = CGAffineTransform(translationX: w * (0.5 + x), y: h * (0.5 - y))
+                .rotated(by: rotation * .pi / 180).scaledBy(x: fit, y: fit)
+                .translatedBy(x: -extent.midX, y: -extent.midY).inverted()
+            return [CGPoint(x: 0, y: 0), CGPoint(x: w, y: 0), CGPoint(x: 0, y: h), CGPoint(x: w, y: h)]
+                .allSatisfy { extent.insetBy(dx: -1e-6, dy: -1e-6).contains($0.applying(t)) }
+        }
+        var random = RecipeRandom(seed: 2026)
+        var exact = true
+        for _ in 0..<4000 {
+            let r = random.value(0.4...2.5), k = random.value(0.25...4), rotation = random.value(-180...180)
+            let x = random.value(-0.6...0.6), y = random.value(-0.6...0.6)
+            let s = Coverage.minimumCoverScale(canvasAspect: r, imageAspect: k, rotation: rotation, x: x, y: y)
+            exact = exact && brute(r: r, k: k, scale: s * 1.000001, rotation: rotation, x: x, y: y)
+                && !brute(r: r, k: k, scale: s * 0.999, rotation: rotation, x: x, y: y)
+        }
+        check(exact, "minimum cover scale matches a brute-force corner test")
+        check(abs(Coverage.minimumCoverScale(canvasAspect: 1.4, imageAspect: 1.5, rotation: 0, x: 0, y: 0) - 1) < 1e-9,
+              "scale 1 exactly covers the canvas without rotation or offset")
+
+        // Solid, opaque sources of different shapes over a garish background.
+        func solid(_ w: Int, _ h: Int) -> PreparedMaterial {
+            let c = Renderer.canvas(w: w, h: h)!
+            c.setFillColor(Ink(0, 0.6, 0.2).cg); c.fill(CGRect(x: 0, y: 0, width: w, height: h))
+            return PreparedMaterial(Layer(name: "\(w)x\(h)", material: .image, image: SourceImage(c.makeImage()!), sourcePath: "/solid/\(w)x\(h)"))
+        }
+        let materials = [solid(600, 400), solid(400, 600), solid(500, 500), solid(800, 200), solid(240, 720)]
+        func covered(_ art: Artwork) -> Bool {
+            art.layers.filter(Coverage.applies).allSatisfy { layer in
+                brute(r: art.ratio, k: Coverage.aspect(of: layer, canvas: art.ratio), scale: layer.scale,
+                      rotation: layer.rotation, x: layer.x, y: layer.y)
+            }
+        }
+        func photoLed(_ art: Artwork) -> Bool {
+            art.layers.filter { $0.material != .image }.allSatisfy { pattern in
+                pattern.opacity <= TrialGenerator.patternOpacityCap + 1e-9 && pattern.blend != .normal
+                    && TrialGenerator.patternBlends.contains(pattern.blend) && pattern.material != .stripes
+            }
+        }
+        var composed: [Artwork] = [], allCovered = true, subtle = true
+        for aspect in ["Square", "Portrait", "Landscape"] {
+            for style in CompositionStyle.allCases {
+                for seed in 1...60 {
+                    let art = TrialGenerator.compose(materials, style: style, aspect: aspect, seed: UInt64(seed))
+                    composed.append(art)
+                    allCovered = allCovered && covered(art)
+                    subtle = subtle && photoLed(art)
+                    var relative = art
+                    for (i, amount) in [0.5, 1, 1.5, 2].enumerated() {
+                        let varied = TrialGenerator.vary(art, materials: materials, seed: UInt64(seed * 10 + i), amount: amount)
+                        allCovered = allCovered && covered(varied)
+                        subtle = subtle && photoLed(varied)
+                        // Variations of variations must not drift past the cap either.
+                        relative = TrialGenerator.vary(relative, materials: materials, seed: UInt64(seed * 10 + i + 5), amount: 2)
+                        subtle = subtle && photoLed(relative)
+                    }
+                }
+            }
+        }
+        check(allCovered, "every generated and varied image and pattern layer covers the canvas in all styles and shapes")
+        check(subtle, "generated and varied patterns stay a faint, non-normal texture without bold stripes")
+        let placed = composed.flatMap { art in art.layers.filter { $0.material == .image && $0.tiles <= 1 }.map { (art.ratio, $0) } }
+        let turned = placed.filter { abs($0.1.rotation) > 45 }.count
+        let zooms = placed.map { ratio, layer in
+            layer.scale / Coverage.minimumCoverScale(canvasAspect: ratio, imageAspect: Coverage.aspect(of: layer, canvas: ratio),
+                                                     rotation: layer.rotation, x: 0, y: 0)
+        }
+        check(Double(turned) > Double(placed.count) * 0.35 && zooms.filter { $0 >= 2 }.count > placed.count / 8
+              && zooms.filter { $0 < 1.1 }.count > placed.count / 8,
+              "placements mix large rotations, plain crops and strong detail zooms")
+        check(zip(placed, zooms).allSatisfy { $0.1.scale <= max(4, $0.1.scale / $1 * Coverage.margin) + 1e-9 },
+              "generated zoom stays within what a 2400-pixel source supports unless coverage needs more")
+        check(!CompositionStyle.allCases.contains { ["Collage", "Weave"].contains($0.rawValue) },
+              "no style places shrunken photos over a ground or covers them with a bold pattern")
+        check(CompositionStyle.allCases.allSatisfy { style in TrialGenerator.styles(count: 600, seed: 9).filter { $0 == style }.count == 120 },
+              "long style sequences stay balanced")
+
+        let renderer = Renderer()
+        var clean = true
+        for (i, base) in composed.enumerated() where i % 9 == 0 {
+            var art = TrialGenerator.vary(base, materials: materials, seed: UInt64(i), amount: 2)
+            art.background = Ink(1, 0, 1)
+            art.layers = art.layers.filter { $0.material == .image }.map { var l = $0; l.opacity = 1; l.blend = .normal; return l }
+            // Distortions stay on (they must not pull in the background either); colour stays neutral.
+            art.warp.saturation = 1; art.warp.contrast = 1
+            for bypass in [true, false] {
+                let image = renderer.render(art, longEdge: 200, bypass: bypass)!
+                let data = image.dataProvider!.data! as Data
+                for y in 0..<image.height { for x in 0..<image.width {
+                    let o = y * image.bytesPerRow + x * 4
+                    if data[o] > 24 || data[o + 2] > 80 { clean = false }
+                }}
+            }
+        }
+        check(clean, "rendered generations never reveal the background around a photo")
     }
 }

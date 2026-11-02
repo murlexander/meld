@@ -24,20 +24,18 @@ final class Renderer {
                 .rotated(by: layer.rotation * .pi / 180).scaledBy(x: fit, y: fit)
                 .translatedBy(x: -extent.midX, y: -extent.midY)
             if repeats > 1 {
-                // CIAffineTile materializes its whole input. Shrink the cell to its
-                // on-canvas pixel size first (whole pixels, so tiles join without seams);
-                // tiling at source resolution held hundreds of MB per render.
+                // Tiling reads its whole cell. Shrink the cell to its on-canvas pixel size
+                // first; tiling at source resolution held hundreds of MB per render.
                 let uw = max(1, min(extent.width, (extent.width * fit).rounded()))
                 let uh = max(1, min(extent.height, (extent.height * fit).rounded()))
                 let sx = uw / extent.width, sy = uh / extent.height
                 let unit = source.transformed(by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY).concatenating(CGAffineTransform(scaleX: sx, y: sy)))
-                // Reflect adjacent cells before tiling to join their edges cleanly.
-                let horizontal = unit.transformed(by: CGAffineTransform(a: -1, b: 0, c: 0, d: 1, tx: uw * 2, ty: 0))
-                let vertical = unit.transformed(by: CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: uh * 2))
-                let diagonal = horizontal.transformed(by: CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: uh * 2))
-                source = unit.composited(over: horizontal).composited(over: vertical).composited(over: diagonal)
-                    .cropped(to: CGRect(x: 0, y: 0, width: uw * 2, height: uh * 2))
-                    .applyingFilter("CIAffineTile")
+                // Reflect adjacent cells across every edge. Sampling the edge-clamped cell keeps
+                // borders opaque; cropping a mirrored cell for CIAffineTile left faint
+                // background-coloured seams wherever the tiles were rotated.
+                let unitExtent = CGRect(x: 0, y: 0, width: uw, height: uh)
+                if let tiled = Self.mirrorTile.apply(extent: .infinite, roiCallback: { _, _ in unitExtent.insetBy(dx: -2, dy: -2) },
+                                                     image: unit.clampedToExtent(), arguments: [CIVector(x: uw, y: uh)]) { source = tiled }
                 // Same placement as before, expressed in the shrunken cell's coordinates.
                 t = CGAffineTransform(translationX: CGFloat(w) * (0.5 + layer.x), y: CGFloat(h) * (0.5 - layer.y))
                     .rotated(by: layer.rotation * .pi / 180).scaledBy(x: fit / sx, y: fit / sy)
@@ -60,12 +58,15 @@ final class Renderer {
                 composite = composite.clampedToExtent().applyingFilter("CIBumpDistortion", parameters: [kCIInputCenterKey: center, kCIInputRadiusKey: Double(longEdge) * 0.55, kCIInputScaleKey: warp.bulge]).cropped(to: rect)
             }
             if warp.pixel > 0.002 {
-                composite = composite.applyingFilter("CIPixellate", parameters: [kCIInputScaleKey: max(1, warp.pixel * Double(longEdge) * 0.12), kCIInputCenterKey: center]).cropped(to: rect)
+                composite = composite.clampedToExtent().applyingFilter("CIPixellate", parameters: [kCIInputScaleKey: max(1, warp.pixel * Double(longEdge) * 0.12), kCIInputCenterKey: center]).cropped(to: rect)
             }
             composite = composite.applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: warp.saturation, kCIInputContrastKey: warp.contrast]).cropped(to: rect)
         }
         return context.createCGImage(composite, from: rect, format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB), deferred: false)
     }
+    /// Maps the plane onto one cell, mirroring alternate repeats.
+    private static let mirrorTile = CIWarpKernel(source:
+        "kernel vec2 mirrorTile(vec2 size) { vec2 q = mod(destCoord(), 2.0 * size); return size - abs(q - size); }")!
     static func canvas(w: Int, h: Int) -> CGContext? {
         CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
     }

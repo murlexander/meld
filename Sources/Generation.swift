@@ -41,7 +41,62 @@ enum SessionStage { case material, previews, refine }
 
 enum CompositionStyle: String, CaseIterable {
     case flow = "Flow", vortex = "Vortex", blocks = "Blocks"
-    case collage = "Collage", weave = "Weave", tiles = "Tiles"
+    case detail = "Detail", tiles = "Tiles"
+}
+
+/// Geometry of the Renderer's layer transform, in canvas-height units. An image layer is
+/// cover-fitted at scale 1, centred at `(0.5 + x, 0.5 - y)` of the canvas and rotated by
+/// `rotation` degrees, so scale 1 with no rotation or offset exactly fills the canvas.
+enum Coverage {
+    /// Generated layers keep this much extra scale beyond exact coverage, absorbing pixel
+    /// rounding of canvas sizes and resampling at the image boundary.
+    static let margin = 1.02
+    /// Smallest `layer.scale` at which the rotated, offset layer covers the whole canvas.
+    static func minimumCoverScale(canvasAspect r: Double, imageAspect k: Double, rotation: Double, x: Double, y: Double) -> Double {
+        // Size of the image at scale 1, and its centre relative to the canvas centre.
+        let width = max(r, k), height = max(r / k, 1)
+        let cx = r * x, cy = -y
+        let angle = rotation * .pi / 180, c = cos(angle), s = sin(angle)
+        var needed = 0.0
+        for (px, py) in [(-r/2, -0.5), (r/2, -0.5), (-r/2, 0.5), (r/2, 0.5)] {
+            // Each canvas corner, in the image's own (unrotated) axes.
+            let dx = px - cx, dy = py - cy
+            let u = c * dx + s * dy, v = -s * dx + c * dy
+            needed = max(needed, 2 * abs(u) / width, 2 * abs(v) / height)
+        }
+        return needed
+    }
+    static func covers(canvasAspect r: Double, imageAspect k: Double, scale: Double, rotation: Double, x: Double, y: Double) -> Bool {
+        minimumCoverScale(canvasAspect: r, imageAspect: k, rotation: rotation, x: x, y: y) <= scale + 1e-9
+    }
+    /// Width over height of what the Renderer draws for a layer: the image, or a canvas-sized pattern.
+    static func aspect(of layer: Layer, canvas ratio: Double) -> Double {
+        guard layer.material == .image else { return ratio }
+        guard let pixels = layer.image?.pixels, pixels.height > 0 else { return 1 }
+        return Double(pixels.width) / Double(pixels.height)
+    }
+    /// Whether a layer is placed geometrically; mirrored tiles already repeat endlessly.
+    static func applies(to layer: Layer) -> Bool { layer.material != .image || layer.tiles <= 1 }
+    /// Makes a layer cover the canvas with `margin` to spare, keeping its rotation. It keeps
+    /// at least the requested scale and pulls the offset towards the centre as far as needed;
+    /// it only zooms further when even a centred layer would not cover.
+    static func fill(_ layer: inout Layer, canvas ratio: Double) {
+        guard applies(to: layer) else { return }
+        let k = aspect(of: layer, canvas: ratio)
+        func needed(_ t: Double) -> Double {
+            margin * minimumCoverScale(canvasAspect: ratio, imageAspect: k, rotation: layer.rotation, x: layer.x * t, y: layer.y * t)
+        }
+        let scale = max(layer.scale, needed(0))
+        // Allowed centres form a convex region containing the canvas centre, so
+        // shrinking the offset along its line finds the farthest covering position.
+        var t = 1.0
+        if needed(1) > scale {
+            var low = 0.0, high = 1.0
+            for _ in 0..<40 { let mid = (low + high) / 2; if needed(mid) <= scale { low = mid } else { high = mid } }
+            t = low
+        }
+        layer.scale = scale; layer.x *= t; layer.y *= t
+    }
 }
 
 // A seed describes a repeatable recipe, independent of layer UUIDs.
@@ -122,11 +177,20 @@ extension Ink {
 }
 
 enum TrialGenerator {
+    /// Generated patterns are only a subtle texture: the photographs must clearly dominate.
+    static let patternOpacityCap = 0.3
+    static let patternBlends: [Blend] = [.softLight, .multiply]
+    /// Shapes variations may swap in; bold stripes overpower the photographs.
+    static let patternShapes: [Material] = [.dots, .checker, .rings, .noise]
     static func styles(count: Int, seed: UInt64) -> [CompositionStyle] {
         var random = RecipeRandom(seed: seed)
-        // Each group explores every style; a batch never becomes twenty similar swirls.
-        var result: [CompositionStyle] = []
-        while result.count < count { result += CompositionStyle.allCases.shuffled(using: &random) }
+        // Each group of six explores every style plus one extra, and the extras rotate
+        // through the styles, so a batch never becomes twenty similar swirls.
+        var result: [CompositionStyle] = [], extras: [CompositionStyle] = []
+        while result.count < count {
+            if extras.isEmpty { extras = CompositionStyle.allCases.shuffled(using: &random) }
+            result += (CompositionStyle.allCases + [extras.removeFirst()]).shuffled(using: &random)
+        }
         return Array(result.prefix(count))
     }
     static func compose(_ materials: [PreparedMaterial], style: CompositionStyle, aspect: String, seed: UInt64) -> Artwork {
@@ -135,15 +199,14 @@ enum TrialGenerator {
         guard !materials.isEmpty else { return art }
         let picked = Array(materials.shuffled(using: &random).prefix(min(materials.count, random.pick([2, 3]))))
         let colours = picked[0].colours
-        let ink = colours[0].mixed(with: Ink(0.04, 0.06, 0.07), amount: 0.15)
         let paper = colours.last!.mixed(with: Ink(0.98, 0.96, 0.91), amount: 0.5)
         let colour = random.pick(colours)
         art.background = paper
+        let ratio = art.ratio
         art.layers = picked.map { prepared in
             var layer = prepared.layer
             layer.id = UUID(); layer.visible = true; layer.tiles = 1
-            layer.scale = random.value(1.15...1.7); layer.rotation = random.value(-18...18)
-            layer.x = random.value(-0.18...0.18); layer.y = random.value(-0.18...0.18)
+            place(&layer, ratio: ratio, zoom: zoom(&random), random: &random)
             return layer
         }
         for i in art.layers.indices where i > 0 {
@@ -151,49 +214,78 @@ enum TrialGenerator {
             art.layers[i].blend = random.pick([.softLight, .screen, .normal])
         }
         func pattern(_ shape: Material, _ opacity: Double, _ blend: Blend, _ frequency: Double, _ rotation: Double) -> Layer {
-            Layer(name: shape.label, material: shape, opacity: opacity, blend: blend, scale: 1.5,
-                  rotation: rotation, frequency: frequency, ink: colour, paper: paper)
+            var layer = Layer(name: shape.label, material: shape, opacity: min(opacity, patternOpacityCap), blend: blend, scale: 1.5,
+                              rotation: rotation, frequency: frequency, ink: colour, paper: paper)
+            // Rotated canvas-sized patterns need more than 1.5× on non-square canvases.
+            Coverage.fill(&layer, canvas: ratio)
+            return layer
         }
         art.warp.centerX = random.value(0.3...0.7); art.warp.centerY = random.value(0.3...0.7)
         art.warp.saturation = random.value(0.8...1.25)
         switch style {
         case .flow:
-            art.layers.append(pattern(random.pick([.stripes, .noise]), random.value(0.16...0.35), .softLight, random.value(4...17), random.value(-80...80)))
+            art.layers.append(pattern(random.pick([.dots, .noise]), random.value(0.12...0.26), .softLight, random.value(4...17), random.value(-80...80)))
             art.warp.wave = random.value(0.17...0.4); art.warp.wavelength = random.value(1.4...4.5)
             art.warp.twist = random.value(-0.4...0.4)
         case .vortex:
-            art.layers.append(pattern(.rings, random.value(0.2...0.45), .softLight, random.value(4...12), 0))
+            art.layers.append(pattern(.rings, random.value(0.14...0.28), .softLight, random.value(4...12), 0))
             art.warp.twist = random.pick([-1.0, 1.0]) * random.value(1.2...2.7)
             art.warp.bulge = random.value(-0.25...0.4); art.warp.wave = random.value(0...0.08)
         case .blocks:
-            art.layers[0].scale = random.value(1.6...2.8)
-            art.layers.append(pattern(.checker, random.value(0.12...0.32), .softLight, random.value(3...9), random.pick([0, 45])))
+            place(&art.layers[0], ratio: ratio, zoom: random.value(1.6...2.8), random: &random)
+            art.layers.append(pattern(.checker, random.value(0.1...0.24), .softLight, random.value(3...9), random.pick([0, 45])))
             art.warp.pixel = random.value(0.45...0.95); art.warp.contrast = random.value(1.02...1.18)
-        case .collage:
-            for i in art.layers.indices {
-                art.layers[i].scale = random.value(0.42...0.74)
-                art.layers[i].rotation = random.value(-28...28)
-                art.layers[i].x = i == 0 ? -0.22 : (i == 1 ? 0.23 : random.value(-0.1...0.1))
-                art.layers[i].y = i == 0 ? 0.18 : (i == 1 ? -0.16 : random.value(-0.25...0.25))
-                art.layers[i].blend = .normal; art.layers[i].opacity = random.value(0.8...1)
+        case .detail:
+            // One strongly zoomed, turned crop dominates; the others glaze over it full-bleed,
+            // finished with a fine grain.
+            place(&art.layers[0], ratio: ratio, zoom: random.value(2.2...3.6), random: &random)
+            for i in art.layers.indices where i > 0 {
+                art.layers[i].opacity = random.value(0.18...0.4)
+                art.layers[i].blend = random.pick([.softLight, .multiply, .screen, .normal])
             }
-            var ground = pattern(random.pick([.stripes, .dots]), 0.4, .normal, random.value(3...8), random.value(-30...30))
-            ground.ink = ink
-            art.layers.insert(ground, at: 0)
-        case .weave:
-            art.layers.append(pattern(random.pick([.stripes, .dots, .checker]), random.value(0.6...0.82), .normal, random.value(5...22), random.pick([0, 30, 45, 90])))
-            var crossing = pattern(.stripes, random.value(0.2...0.4), .multiply, random.value(3...12), random.pick([-45, 0, 90]))
-            crossing.ink = ink
-            art.layers.append(crossing)
-            art.warp.wave = random.value(0...0.1); art.warp.wavelength = random.value(1.5...3)
+            art.warp.wave = random.pick([0, random.value(0.02...0.06)]); art.warp.wavelength = random.value(1.5...3)
+            art.warp.contrast = random.value(1...1.12)
+            art.layers.append(pattern(.noise, random.value(0.08...0.18), .softLight, random.value(30...60), 0))
         case .tiles:
             art.layers[0].tiles = random.pick([3, 4, 5, 6]); art.layers[0].scale = random.value(0.9...1.2)
             art.layers[0].rotation = random.pick([0, 30, 45, 90])
             for i in art.layers.indices where i > 0 { art.layers[i].tiles = art.layers[0].tiles; art.layers[i].opacity = 0.2 }
-            art.layers.append(pattern(random.pick([.dots, .stripes]), 0.16, .softLight, random.value(6...18), 0))
+            art.layers.append(pattern(random.pick([.dots, .noise]), 0.16, .softLight, random.value(6...18), 0))
             art.warp.wave = random.value(0...0.08)
         }
         return art
+    }
+
+    /// Zoom over exact coverage: a quarter are plain covering crops, half a moderate
+    /// zoom, and a quarter a strong detail crop.
+    static func zoom(_ random: inout RecipeRandom) -> Double {
+        let roll = random.value(0...1)
+        return roll < 0.25 ? 1 : roll < 0.75 ? random.value(1.15...1.8) : random.value(2...3.4)
+    }
+    /// Any angle occurs; small tilts and quarter turns are a little more likely than chance.
+    static func angle(_ random: inout RecipeRandom) -> Double {
+        let roll = random.value(0...1)
+        if roll < 0.3 { return random.value(-15...15) }
+        if roll < 0.45 { return random.pick([90.0, 180, -90]) + random.value(-8...8) }
+        return random.value(-180...180)
+    }
+    /// Full-bleed placement: a random rotation, `zoom` over the scale that covers the canvas
+    /// at that rotation, and a random point of the image moved near the canvas centre. The
+    /// offset is then pulled back as far as needed for the canvas to stay covered. Total scale
+    /// stays at most 4× unless coverage needs more, which a 2400-pixel source supports.
+    static func place(_ layer: inout Layer, ratio: Double, zoom: Double, random: inout RecipeRandom) {
+        let k = Coverage.aspect(of: layer, canvas: ratio)
+        layer.rotation = angle(&random)
+        let cover = Coverage.margin * Coverage.minimumCoverScale(canvasAspect: ratio, imageAspect: k, rotation: layer.rotation, x: 0, y: 0)
+        layer.scale = max(cover, min(4, cover * zoom))
+        // A focus point in the image, in canvas-height units relative to the image centre.
+        let width = max(ratio, k) * layer.scale, height = max(ratio / k, 1) * layer.scale
+        let u = random.value(-0.5...0.5) * width, v = random.value(-0.5...0.5) * height
+        let angle = layer.rotation * .pi / 180
+        let fx = cos(angle) * u - sin(angle) * v, fy = sin(angle) * u + cos(angle) * v
+        // Centre the image so that point lands on the canvas centre (y runs downwards in the model).
+        layer.x = -fx / ratio; layer.y = fy
+        Coverage.fill(&layer, canvas: ratio)
     }
 
     /// A relative of a preview: the same recipe and images with nudged placement, pattern
@@ -211,8 +303,8 @@ enum TrialGenerator {
         for i in art.layers.indices {
             var layer = art.layers[i]
             layer.id = UUID()
-            layer.scale = clamp(nudge(layer.scale, 0.2), 0.1...3)
-            layer.rotation = clamp(layer.rotation + shift(15), -180...180)
+            layer.scale = clamp(nudge(layer.scale, 0.2), 0.1...4)
+            layer.rotation = clamp(layer.rotation + shift(layer.material == .image ? 30 : 15), -180...180)
             layer.x = clamp(layer.x + shift(0.1), -0.75...0.75)
             layer.y = clamp(layer.y + shift(0.1), -0.75...0.75)
             if layer.material == .image {
@@ -223,10 +315,11 @@ enum TrialGenerator {
             } else {
                 layer.frequency = clamp(nudge(layer.frequency, 0.35), 2...60)
                 layer.rotation = clamp(layer.rotation + shift(25), -180...180)
-                layer.opacity = clamp(layer.opacity + shift(0.1), 0.05...1)
+                layer.opacity = clamp(layer.opacity + shift(0.06), 0.05...patternOpacityCap)
+                if !patternBlends.contains(layer.blend) { layer.blend = .softLight }
                 if !palette.isEmpty && chance(0.3) { layer.ink = random.pick(palette) }
-                if chance(0.12) {
-                    layer.material = random.pick([.stripes, .dots, .checker, .rings, .noise])
+                if chance(0.12) || layer.material == .stripes {
+                    layer.material = random.pick(patternShapes)
                     layer.name = layer.material.label
                 }
             }
@@ -240,6 +333,8 @@ enum TrialGenerator {
             art.layers[target].sourcePath = replacement.sourcePath
             art.layers[target].name = replacement.name
         }
+        // Variations stay full-bleed, even when nudged or given an image of another shape.
+        for i in art.layers.indices { Coverage.fill(&art.layers[i], canvas: art.ratio) }
         var warp = art.warp
         warp.wave = clamp(nudge(warp.wave, 0.35), 0...1)
         warp.wavelength = clamp(nudge(warp.wavelength, 0.3), 1...12)

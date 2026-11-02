@@ -119,8 +119,8 @@ enum PipelineTests {
         check(sawPartial, "previews appear progressively while the rest of the set renders")
         check(studio.error == nil && studio.trials.map(\.number) == Array(1...36), "concurrent previews keep their numbering and order")
         check(Set(studio.trials.map { hash($0.thumbnail) }).count == 36
-              && CompositionStyle.allCases.allSatisfy { style in studio.trials.filter { $0.style == style }.count == 6 },
-              "concurrent generation keeps 36 distinct previews with six of each style")
+              && CompositionStyle.allCases.allSatisfy { style in (7...8).contains(studio.trials.filter { $0.style == style }.count) },
+              "concurrent generation keeps 36 distinct previews with every style evenly represented")
 
         // Parallel export writes the same pixels as a serial render, in the chosen order.
         let picks = Array(studio.trials.prefix(8).reversed())
