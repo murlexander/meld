@@ -19,6 +19,7 @@ private typealias AppState<Value> = SwiftUI.State<Value>
         if CommandLine.arguments.contains("--self-test") { SelfTest.run(); exit(0) }
         if CommandLine.arguments.contains("--benchmark") { Benchmark.run() }
         if CommandLine.arguments.contains("--ui-snapshot") { UISnapshot.run() }
+        if CommandLine.arguments.contains("--ui-benchmark") { UIBenchmark.run() }
         let isolated = CommandLine.arguments.contains("--ui-test")
         let model = Studio(restoreSource: !isolated, starter: false)
         if isolated, let i = CommandLine.arguments.firstIndex(of: "--ui-test-source"), i+1 < CommandLine.arguments.count {

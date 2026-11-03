@@ -22,6 +22,9 @@ enum UISnapshot {
             while !condition() && Date() < deadline { pump(0.01) }
         }
         let studio = Studio(restoreSource: false, starter: false)
+        // Fixed seeds, so captures from different builds show the same previews.
+        var seeds = RecipeRandom(seed: 1)
+        studio.nextSeed = { seeds.next() }
         studio.pasteboard = NSPasteboard(name: NSPasteboard.Name("studio.meld.snapshot"))
         studio.setSourceFolder(source, scan: false)
         let window = NSWindow(contentRect: CGRect(x: -30000, y: -30000, width: 1280, height: 820),
