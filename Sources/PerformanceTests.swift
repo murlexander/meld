@@ -1,6 +1,5 @@
 import AppKit
 import ImageIO
-import Combine
 
 @MainActor
 enum PerformanceTests {
@@ -101,17 +100,16 @@ enum PerformanceTests {
         let first = studio.trials.first { $0.style == .flow }!
         let second = studio.trials.first { $0.id != first.id }!
         studio.openTrial(first.id); wait { !studio.rendering }
-        var updates = 0
-        let observer = studio.$preview.dropFirst().sink { _ in updates += 1 }
+        var updates = 0, shown = studio.preview
         for i in 0..<60 {
             studio.change("continuous-colour") { $0.warp.saturation = 0.4 + Double(i) / 60 }
             RunLoop.main.run(until: Date().addingTimeInterval(0.016))
+            if studio.preview !== shown { updates += 1; shown = studio.preview }
         }
         check(updates > 1, "continuous slider changes publish previews before the gesture ends")
         wait { !studio.rendering }
         check(studio.preview?.size.width == 1000 && samePixels(previewPixels(studio), renderer.render(studio.art, longEdge: 1000)!),
               "coalesced slider renders settle to the latest artwork at full Fit resolution")
-        observer.cancel()
         studio.setMagnifiedPreview(true); wait { !studio.rendering }
         check(studio.preview?.size.width == 2400, "magnifying still renders at export resolution")
         studio.change("magnified-colour") { $0.warp.saturation = 0.7 }

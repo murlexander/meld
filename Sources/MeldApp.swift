@@ -9,9 +9,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
 
+// Explicit alias avoids the SDK's State macro with command-line toolchains.
+private typealias AppState<Value> = SwiftUI.State<Value>
+
 @main struct MeldApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
-    @StateObject var studio: Studio
+    @AppState private var studio: Studio
     init() {
         if CommandLine.arguments.contains("--self-test") { SelfTest.run(); exit(0) }
         if CommandLine.arguments.contains("--benchmark") { Benchmark.run() }
@@ -21,7 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if isolated, let i = CommandLine.arguments.firstIndex(of: "--ui-test-source"), i+1 < CommandLine.arguments.count {
             model.setSourceFolder(URL(fileURLWithPath: CommandLine.arguments[i+1]), scan: false)
         }
-        _studio = StateObject(wrappedValue: model)
+        _studio = AppState(initialValue: model)
     }
     var body: some Scene {
         Window("Meld", id: "studio") {

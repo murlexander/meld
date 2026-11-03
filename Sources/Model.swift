@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
+import Observation
 
 enum Material: String, CaseIterable {
     case image, stripes, dots, checker, rings, noise
@@ -131,47 +132,49 @@ struct Artwork: Equatable {
     var ratio: Double { aspect == "Portrait" ? 0.8 : aspect == "Landscape" ? 1.4 : 1 }
 }
 
-final class Studio: ObservableObject {
-    @Published var art = Artwork()
-    @Published var selected: UUID?
-    @Published var preview: NSImage?
-    @Published var rendering = false
-    @Published var error: String?
-    @Published var status = "Ready to play"
-    @Published var revision = 0
-    @Published var comparing = false
-    @Published var exporting = false
-    @Published private(set) var sourceFolder: URL?
-    @Published private(set) var sourceCount = 0
-    @Published private(set) var sourceScanning = false
-    @Published private(set) var gathering = false
-    @Published private(set) var surpriseRevision = 0
-    @Published private(set) var importing = false
-    @Published private(set) var sourceMessage = "Choose a folder for Surprise me."
-    @Published private(set) var trials: [Trial] = []
-    @Published private(set) var trialsFolder: URL?
-    @Published var favouriteTrials: Set<UUID> = []
-    @Published private(set) var stage = SessionStage.material
-    @Published private(set) var activeTrialID: UUID?
-    @Published var batchAspect = "Square"
-    @Published private(set) var refinement = Refinement()
-    @Published private(set) var makingTrials = false
-    @Published private(set) var trialProgress = 0
-    @Published private(set) var trialMessage = ""
-    @Published private(set) var exportingTrials = false
-    @Published private(set) var trialExportProgress = 0
-    @Published private(set) var trialExportTotal = 0
+/// The session model. Observation tracks each property separately, so a view re-renders only
+/// when something it reads changes; bookkeeping no view reads is ignored.
+@Observable final class Studio {
+    var art = Artwork()
+    var selected: UUID?
+    var preview: NSImage?
+    var rendering = false
+    var error: String?
+    var status = "Ready to play"
+    var revision = 0
+    var comparing = false
+    var exporting = false
+    private(set) var sourceFolder: URL?
+    private(set) var sourceCount = 0
+    private(set) var sourceScanning = false
+    private(set) var gathering = false
+    private(set) var surpriseRevision = 0
+    private(set) var importing = false
+    private(set) var sourceMessage = "Choose a folder for Surprise me."
+    private(set) var trials: [Trial] = []
+    private(set) var trialsFolder: URL?
+    var favouriteTrials: Set<UUID> = []
+    private(set) var stage = SessionStage.material
+    private(set) var activeTrialID: UUID?
+    var batchAspect = "Square"
+    private(set) var refinement = Refinement()
+    private(set) var makingTrials = false
+    private(set) var trialProgress = 0
+    private(set) var trialMessage = ""
+    private(set) var exportingTrials = false
+    private(set) var trialExportProgress = 0
+    private(set) var trialExportTotal = 0
     /// Grid rows, newest first. A new set keeps earlier picks in their original rows.
-    @Published private(set) var groups: [TrialGroup] = []
-    @Published var gridSelection: UUID?
-    @Published var picksOnly = false { didSet { keepSelectionVisible() } }
+    private(set) var groups: [TrialGroup] = []
+    var gridSelection: UUID?
+    var picksOnly = false { didSet { keepSelectionVisible() } }
     /// Main colours of the refined preview as displayed (before any value study).
-    @Published private(set) var palette: [Ink] = []
-    @Published private(set) var study = Study.colour
-    @Published private(set) var copying = false
+    private(set) var palette: [Ink] = []
+    private(set) var study = Study.colour
+    private(set) var copying = false
     /// Grid thumbnail width in points; preview thumbnails are 480 pixels, sharp up to 240 points on Retina.
     static let thumbnailSizes: [Double] = [130, 170, 210, 250]
-    @Published private(set) var thumbnailSize = 170.0
+    private(set) var thumbnailSize = 170.0
     func zoomThumbnails(_ step: Int) {
         let sizes = Self.thumbnailSizes
         let index = sizes.firstIndex(of: thumbnailSize) ?? 1
@@ -179,31 +182,31 @@ final class Studio: ObservableObject {
         if restoreSource { UserDefaults.standard.set(thumbnailSize, forKey: "grid.thumbnailSize") }
     }
     /// Tests use a private pasteboard so they never replace the user's clipboard.
-    var pasteboard = NSPasteboard.general
+    @ObservationIgnored var pasteboard = NSPasteboard.general
     /// Seeds new sets and variations. The benchmark fixes it so its runs repeat the same work.
-    var nextSeed: () -> UInt64 = { UInt64.random(in: 0...UInt64.max) }
-    private var nextTrialNumber = 1
-    private var nextGroupID = 1
-    private var setCount = 0
+    @ObservationIgnored var nextSeed: () -> UInt64 = { UInt64.random(in: 0...UInt64.max) }
+    @ObservationIgnored private var nextTrialNumber = 1
+    @ObservationIgnored private var nextGroupID = 1
+    @ObservationIgnored private var setCount = 0
     private let trialsQueue = DispatchQueue(label: "Meld.trials", qos: .userInitiated)
-    private var trialJob = CancellableJob()
-    private var trialExportJob = CancellableJob()
+    @ObservationIgnored private var trialJob = CancellableJob()
+    @ObservationIgnored private var trialExportJob = CancellableJob()
     private let materialsQueue = DispatchQueue(label: "Meld.materials", qos: .userInitiated)
     private let materialLoader = MaterialLoader()
-    private var scanToken = UUID()
-    private var scanJob = CancellableJob()
-    private var surpriseToken = UUID()
-    private var surpriseJob = CancellableJob()
-    private var lastMaterials: Set<URL> = []
-    private var lastStyle: CompositionStyle?
-    private var pendingImports = 0
+    @ObservationIgnored private var scanToken = UUID()
+    @ObservationIgnored private var scanJob = CancellableJob()
+    @ObservationIgnored private var surpriseToken = UUID()
+    @ObservationIgnored private var surpriseJob = CancellableJob()
+    @ObservationIgnored private var lastMaterials: Set<URL> = []
+    @ObservationIgnored private var lastStyle: CompositionStyle?
+    @ObservationIgnored private var pendingImports = 0
     private let restoreSource: Bool
     private var history: [Artwork] = []
     private var future: [Artwork] = []
-    private var lastKey = ""
-    private var lastChange = Date.distantPast
-    private var refinementHistory: [Refinement] = []
-    private var refinementFuture: [Refinement] = []
+    @ObservationIgnored private var lastKey = ""
+    @ObservationIgnored private var lastChange = Date.distantPast
+    @ObservationIgnored private var refinementHistory: [Refinement] = []
+    @ObservationIgnored private var refinementFuture: [Refinement] = []
     private struct PreviewScope: Equatable {
         let visit: Int
         let trial: UUID?
@@ -219,16 +222,16 @@ final class Studio: ObservableObject {
         let token: Int
         let interactive: Bool
     }
-    private var pendingPreview: PreviewRequest?
-    private var previewScope: PreviewScope?
-    private var previewWake: DispatchWorkItem?
-    private var previewWakeDate: Date?
-    private var previewInFlight = false
-    private var lastPreviewStart = Date.distantPast
-    private var lastPreviewChange = Date.distantPast
+    @ObservationIgnored private var pendingPreview: PreviewRequest?
+    @ObservationIgnored private var previewScope: PreviewScope?
+    @ObservationIgnored private var previewWake: DispatchWorkItem?
+    @ObservationIgnored private var previewWakeDate: Date?
+    @ObservationIgnored private var previewInFlight = false
+    @ObservationIgnored private var lastPreviewStart = Date.distantPast
+    @ObservationIgnored private var lastPreviewChange = Date.distantPast
     private let queue = DispatchQueue(label: "Meld.render", qos: .userInitiated)
-    private var generation = 0
-    private var previewVisit = 0
+    @ObservationIgnored private var generation = 0
+    @ObservationIgnored private var previewVisit = 0
     let renderer = Renderer()
     private let batchRenderer = Renderer()
     /// Exports, copies and drags render full size on a context of their own (`Renderer.renderAlone`).
@@ -322,7 +325,8 @@ final class Studio: ObservableObject {
             refinementHistory.append(refinement)
             if history.count > 50 { history.removeFirst(); refinementHistory.removeFirst() }
         }
-        lastKey = key; lastChange = Date(); future.removeAll(); refinementFuture.removeAll()
+        lastKey = key; lastChange = Date(); refinementFuture.removeAll()
+        if !future.isEmpty { future.removeAll() }
         revision += 1; schedule(interactive: true)
     }
     func updateLayer(_ key: String, _ body: (inout Layer) -> Void) {
@@ -410,7 +414,7 @@ final class Studio: ObservableObject {
             }
         } else if p.runModal() == .OK { importImages(p.urls) }
     }
-    private var previewLongEdge = 1000
+    @ObservationIgnored private var previewLongEdge = 1000
     func setMagnifiedPreview(_ magnified: Bool) {
         let edge = magnified ? 2400 : 1000
         guard previewLongEdge != edge else { return }

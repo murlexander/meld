@@ -10,7 +10,7 @@ private let accent = Color(nsColor: NSColor(name: nil) { appearance in
 private typealias ViewState<Value> = SwiftUI.State<Value>
 
 struct StudioView: View {
-    @ObservedObject var studio: Studio
+    var studio: Studio
     var body: some View {
         Group {
             switch studio.stage {
@@ -27,7 +27,7 @@ struct StudioView: View {
 }
 
 struct RefinementView: View {
-    @ObservedObject var studio: Studio
+    var studio: Studio
     private enum Panel: String { case layers, adjust }
     @ViewState private var activePanel: Panel = .adjust
     @ViewState private var inspectorVisible = true
@@ -43,7 +43,9 @@ struct RefinementView: View {
         NavigationSplitView(columnVisibility: $columns) {
             sidebar.navigationSplitViewColumnWidth(min: 235, ideal: 250, max: 290)
         } detail: {
-            canvas.toolbar { toolbar }
+            canvas.background {
+                RefinementToolbar(studio: studio, inspectorVisible: inspectorVisible, showInspector: $inspectorVisible, editingName: editingName).equatable()
+            }
         }
         .navigationSplitViewStyle(.balanced)
         // Let the native sidebar and inspector own their full-height material.
@@ -149,70 +151,6 @@ struct RefinementView: View {
             }
         }
     }
-    // Keep panel recovery in the detail toolbar, outside the collapsible inspector.
-    @ToolbarContentBuilder var toolbar: some ToolbarContent {
-        if #available(macOS 26.0, *) {
-            ToolbarItem(placement: .principal) { toolbarTitle }
-                .sharedBackgroundVisibility(.hidden)
-        } else {
-            ToolbarItem(placement: .principal) { toolbarTitle }
-        }
-        ToolbarItem(placement: .navigation) {
-            Button { studio.showTrials() } label: { Label("Previews", systemImage: "square.grid.2x2") }
-                .keyboardShortcut(editingName ? nil : .cancelAction)
-                .help("Return to all previews (Esc); adjustments stay with this one")
-        }
-        if #available(macOS 26.0, *) { ToolbarSpacer(.fixed, placement: .navigation) }
-        ToolbarItem(placement: .navigation) {
-            ControlGroup {
-                Button { studio.openAdjacentTrial(-1) } label: { Label("Previous preview", systemImage: "chevron.left") }
-                    .disabled(!studio.canOpenPrevious).help("Previous preview (⌘[)")
-                Button { studio.openAdjacentTrial(1) } label: { Label("Next preview", systemImage: "chevron.right") }
-                    .disabled(!studio.canOpenNext).help("Next preview (⌘])")
-            }
-        }
-        ToolbarItemGroup {
-            Button { studio.undo() } label: { Image(systemName: "arrow.uturn.backward") }
-                .disabled(!studio.canUndo).accessibilityLabel("Undo").help("Undo (⌘Z)")
-            Button { studio.redo() } label: { Image(systemName: "arrow.uturn.forward") }
-                .disabled(!studio.canRedo).accessibilityLabel("Redo").help("Redo (⇧⌘Z)")
-        }
-        if #available(macOS 26.0, *) { ToolbarSpacer(.fixed) }
-        ToolbarItemGroup {
-            Toggle(isOn: Binding(get: { studio.comparing }, set: { studio.comparing = $0; studio.schedule() })) {
-                Image(systemName: "square.lefthalf.filled")
-            }
-            .toggleStyle(.button).accessibilityLabel("Original preview")
-            .help(studio.comparing ? "Show adjustments" : "Compare with the generated preview")
-            Toggle(isOn: $inspectorVisible) {
-                Image(systemName: "sidebar.right")
-            }
-            .toggleStyle(.button)
-            .accessibilityLabel(inspectorVisible ? "Hide controls" : "Show controls")
-            .help(inspectorVisible ? "Hide controls" : "Show controls")
-        }
-        if #available(macOS 26.0, *) { ToolbarSpacer(.fixed) }
-        pickAndExportToolbar
-    }
-    @ToolbarContentBuilder private var pickAndExportToolbar: some ToolbarContent {
-        ToolbarItem {
-            Button {
-                if let id = studio.activeTrialID { studio.toggleFavourite(id) }
-            } label: { Image(systemName: studio.activeTrialID.map { studio.favouriteTrials.contains($0) } == true ? "star.fill" : "star") }
-                .accessibilityLabel("Pick this preview").help("Include this preview when exporting picks")
-        }
-        if #available(macOS 26.0, *) { ToolbarSpacer(.fixed) }
-        ToolbarItem {
-            Button { studio.export() } label: {
-                Image(systemName: "square.and.arrow.up").offset(y: -1)
-            }
-            .buttonStyle(.borderedProminent).buttonBorderShape(.circle).tint(accent)
-            .disabled(studio.exporting).accessibilityLabel("Export PNG").help("Export PNG (⌘E)")
-        }
-    }
-    private var toolbarTitle: some View {
-        Text(studio.activeTrial?.title ?? "Meld").font(.subheadline).foregroundStyle(.secondary)
-    }
     var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
@@ -281,7 +219,9 @@ struct RefinementView: View {
         LayerThumbnail(layer: layer).equatable()
     }
     var canvas: some View {
-        ZoomCanvas(ratio: studio.art.ratio, tint: accent, resolutionChanged: studio.setMagnifiedPreview) { size in
+        // Each preview opens at Fit; panels and inspector stay as arranged. Resetting the zoom
+        // instead of recreating the canvas avoids relaying out the whole window and toolbar.
+        ZoomCanvas(ratio: studio.art.ratio, tint: accent, fitWhenChanged: studio.activeTrialID, resolutionChanged: studio.setMagnifiedPreview) { size in
                 let w = size.width
                 let h = size.height
                 ZStack {
@@ -307,8 +247,6 @@ struct RefinementView: View {
                         }
                     })
         }
-        // Each preview opens at Fit; panels and inspector stay as arranged.
-        .id(studio.activeTrialID)
         .background(Color(nsColor: .windowBackgroundColor))
         .overlay(alignment: .bottom) {
             if studio.materialsBusy || studio.rendering || studio.exporting || studio.comparing || statusHint != nil {
@@ -510,6 +448,115 @@ struct RefinementView: View {
         return VStack(spacing: 5) {
             HStack { Text(name); Spacer(); Text(label).foregroundStyle(.secondary).monospacedDigit() }.font(.system(size: 13))
             ResettableSlider(value: value, range: range, label: name, reset: { value.wrappedValue = defaultValue })
+        }
+    }
+}
+
+/// The refinement toolbar, declared apart from the canvas and controls so adjustments don't
+/// rebuild it: each item reads only what it shows. Panel recovery stays in the detail toolbar,
+/// outside the collapsible inspector.
+private struct RefinementToolbar: View, Equatable {
+    let studio: Studio
+    let inspectorVisible: Bool
+    let showInspector: Binding<Bool>
+    let editingName: Bool
+    static func == (a: Self, b: Self) -> Bool {
+        a.studio === b.studio && a.inspectorVisible == b.inspectorVisible && a.editingName == b.editingName
+    }
+    var body: some View {
+        Color.clear.toolbar {
+            if #available(macOS 26.0, *) {
+                ToolbarItem(placement: .principal) { Title(studio: studio) }
+                    .sharedBackgroundVisibility(.hidden)
+            } else {
+                ToolbarItem(placement: .principal) { Title(studio: studio) }
+            }
+            ToolbarItem(placement: .navigation) {
+                Button { studio.showTrials() } label: { Label("Previews", systemImage: "square.grid.2x2") }
+                    .keyboardShortcut(editingName ? nil : .cancelAction)
+                    .help("Return to all previews (Esc); adjustments stay with this one")
+            }
+            if #available(macOS 26.0, *) { ToolbarSpacer(.fixed, placement: .navigation) }
+            ToolbarItem(placement: .navigation) { Neighbours(studio: studio) }
+            ToolbarItemGroup {
+                UndoButton(studio: studio)
+                RedoButton(studio: studio)
+            }
+            if #available(macOS 26.0, *) { ToolbarSpacer(.fixed) }
+            ToolbarItemGroup {
+                CompareToggle(studio: studio)
+                Toggle(isOn: showInspector) {
+                    Image(systemName: "sidebar.right")
+                }
+                .toggleStyle(.button)
+                .accessibilityLabel(inspectorVisible ? "Hide controls" : "Show controls")
+                .help(inspectorVisible ? "Hide controls" : "Show controls")
+            }
+            if #available(macOS 26.0, *) { ToolbarSpacer(.fixed) }
+            ToolbarItem { PickButton(studio: studio) }
+            if #available(macOS 26.0, *) { ToolbarSpacer(.fixed) }
+            ToolbarItem { ExportButton(studio: studio) }
+        }
+    }
+
+    private struct Title: View {
+        var studio: Studio
+        var body: some View {
+            Text(studio.activeTrial?.title ?? "Meld").font(.subheadline).foregroundStyle(.secondary)
+        }
+    }
+    private struct Neighbours: View {
+        var studio: Studio
+        var body: some View {
+            ControlGroup {
+                Button { studio.openAdjacentTrial(-1) } label: { Label("Previous preview", systemImage: "chevron.left") }
+                    .disabled(!studio.canOpenPrevious).help("Previous preview (⌘[)")
+                Button { studio.openAdjacentTrial(1) } label: { Label("Next preview", systemImage: "chevron.right") }
+                    .disabled(!studio.canOpenNext).help("Next preview (⌘])")
+            }
+        }
+    }
+    private struct UndoButton: View {
+        var studio: Studio
+        var body: some View {
+            Button { studio.undo() } label: { Image(systemName: "arrow.uturn.backward") }
+                .disabled(!studio.canUndo).accessibilityLabel("Undo").help("Undo (⌘Z)")
+        }
+    }
+    private struct RedoButton: View {
+        var studio: Studio
+        var body: some View {
+            Button { studio.redo() } label: { Image(systemName: "arrow.uturn.forward") }
+                .disabled(!studio.canRedo).accessibilityLabel("Redo").help("Redo (⇧⌘Z)")
+        }
+    }
+    private struct CompareToggle: View {
+        var studio: Studio
+        var body: some View {
+            Toggle(isOn: Binding(get: { studio.comparing }, set: { studio.comparing = $0; studio.schedule() })) {
+                Image(systemName: "square.lefthalf.filled")
+            }
+            .toggleStyle(.button).accessibilityLabel("Original preview")
+            .help(studio.comparing ? "Show adjustments" : "Compare with the generated preview")
+        }
+    }
+    private struct PickButton: View {
+        var studio: Studio
+        var body: some View {
+            Button {
+                if let id = studio.activeTrialID { studio.toggleFavourite(id) }
+            } label: { Image(systemName: studio.activeTrialID.map { studio.favouriteTrials.contains($0) } == true ? "star.fill" : "star") }
+                .accessibilityLabel("Pick this preview").help("Include this preview when exporting picks")
+        }
+    }
+    private struct ExportButton: View {
+        var studio: Studio
+        var body: some View {
+            Button { studio.export() } label: {
+                Image(systemName: "square.and.arrow.up").offset(y: -1)
+            }
+            .buttonStyle(.borderedProminent).buttonBorderShape(.circle).tint(accent)
+            .disabled(studio.exporting).accessibilityLabel("Export PNG").help("Export PNG (⌘E)")
         }
     }
 }
