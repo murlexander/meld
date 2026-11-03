@@ -180,6 +180,8 @@ final class Studio: ObservableObject {
     }
     /// Tests use a private pasteboard so they never replace the user's clipboard.
     var pasteboard = NSPasteboard.general
+    /// Seeds new sets and variations. The benchmark fixes it so its runs repeat the same work.
+    var nextSeed: () -> UInt64 = { UInt64.random(in: 0...UInt64.max) }
     private var nextTrialNumber = 1
     private var nextGroupID = 1
     private var setCount = 0
@@ -602,7 +604,7 @@ final class Studio: ObservableObject {
         trialJob.cancel(); let task = CancellableJob(); trialJob = task
         makingTrials = true; trialProgress = 0; trialMessage = "Gathering images…"
         let aspect = batchAspect
-        let seed = UInt64.random(in: 0...UInt64.max)
+        let seed = nextSeed()
         let group = TrialGroup(id: nextGroupID, title: "Set \(setCount + 1) · \(folder.lastPathComponent) · \(aspect)")
         nextGroupID += 1
         trialsQueue.async { [weak self] in
@@ -614,7 +616,8 @@ final class Studio: ObservableObject {
                 // Start with enough material for a recipe, then broaden each group of six.
                 func poolSize(_ index: Int) -> Int { 3 + (index / 6) * 2 }
                 let wanted = min(12, scan.urls.count, poolSize(count - 1))
-                let candidates = Array(scan.urls.shuffled().prefix(64))
+                var sampling = RecipeRandom(seed: seed ^ 0x3c6ef372fe94f82b)
+                let candidates = Array(scan.urls.shuffled(using: &sampling).prefix(64))
                 // Decoding runs ahead on a few threads; the pool keeps sampled order.
                 var started = false
                 let gatherer = MaterialGatherer(candidates, wanted: wanted, workers: 3, loader: MaterialLoader(),
@@ -772,7 +775,7 @@ final class Studio: ObservableObject {
         for trial in trials { for layer in trial.art.layers where layer.material == .image {
             if let image = layer.image, seen.insert(ObjectIdentifier(image)).inserted { layers.append(layer) }
         }}
-        let art = base.art, style = base.style, seed = UInt64.random(in: 0...UInt64.max)
+        let art = base.art, style = base.style, seed = nextSeed()
         trialsQueue.async { [weak self] in
             guard let self else { return }
             let renderer = self.batchRenderer
