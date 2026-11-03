@@ -10,9 +10,7 @@ enum FeatureTests {
             print("PASS: \(message)")
         }
         func wait(_ condition: () -> Bool) {
-            let deadline = Date().addingTimeInterval(60)
-            while !condition() && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.005)) }
-            check(condition(), "feature workflow settles")
+            check(SelfTest.settle(condition, step: 0.005), "feature workflow settles")
         }
         func hash(_ image: CGImage) -> UInt64 {
             (image.dataProvider!.data! as Data).reduce(UInt64(1469598103934665603)) { ($0 ^ UInt64($1)) &* 1099511628211 }

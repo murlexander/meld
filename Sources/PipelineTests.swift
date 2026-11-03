@@ -11,9 +11,7 @@ enum PipelineTests {
             print("PASS: \(message)")
         }
         func wait(_ condition: () -> Bool) {
-            let deadline = Date().addingTimeInterval(60)
-            while !condition() && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.002)) }
-            check(condition(), "pipeline operation settles")
+            check(SelfTest.settle(condition, step: 0.002), "pipeline operation settles")
         }
         func footprint() -> Double {
             var info = rusage_info_v4()

@@ -35,6 +35,55 @@ struct TrialGroup: Identifiable, Equatable {
 struct Refinement: Equatable {
     var distortion = 1.0
     var pattern = 1.0
+    var colour = 1.0
+    /// Simple refinement controls scale the generated recipe. Distortion scales the warps,
+    /// stretch, blur and mirror (off at 0); pattern amount scales patterns (up to the texture
+    /// cap) and grain; colour scales saturation and the colour treatment's mix.
+    ///
+    /// A value follows the control only while it still holds what the control last produced
+    /// from `original` at `previous`; anything edited in More controls keeps its manual value.
+    static func apply(_ key: String, value: Double, previous: Double, original: Artwork, to artwork: inout Artwork) {
+        func follow(_ current: inout Double, _ make: (Double) -> Double) {
+            if abs(current - make(previous)) < 1e-9 { current = make(value) }
+        }
+        switch key {
+        case "distortion":
+            let o = original.warp
+            follow(&artwork.warp.wave) { o.wave * $0 }
+            follow(&artwork.warp.twist) { o.twist * $0 }
+            follow(&artwork.warp.bulge) { min(0.9, max(-0.9, o.bulge * $0)) }
+            follow(&artwork.warp.pixel) { min(1, o.pixel * $0) }
+            func symmetry(_ v: Double) -> Symmetry { v < 0.01 ? .none : original.effects.symmetry }
+            if artwork.effects.symmetry == symmetry(previous) { artwork.effects.symmetry = symmetry(value) }
+            follow(&artwork.effects.blurAmount) { min(0.1, original.effects.blurAmount * $0) }
+            for i in artwork.layers.indices {
+                guard let base = original.layers.first(where: { $0.id == artwork.layers[i].id }), base.stretch != 1 else { continue }
+                // Stretch derives from the generated layer; its placement then zooms only as far
+                // as needed to stay full-bleed, so 100% restores the recipe. A layer whose
+                // placement or stretch was edited by hand is left alone.
+                func stretched(_ v: Double) -> Layer {
+                    var layer = artwork.layers[i]
+                    layer.scale = base.scale; layer.x = base.x; layer.y = base.y; layer.rotation = base.rotation
+                    layer.stretch = v == 1 ? base.stretch : min(maximumStretch, max(1, 1 + (base.stretch - 1) * v))
+                    if Coverage.covers(base, canvas: artwork.ratio) { Coverage.fill(&layer, canvas: artwork.ratio) }
+                    return layer
+                }
+                if artwork.layers[i] == stretched(previous) { artwork.layers[i] = stretched(value) }
+            }
+        case "colour":
+            follow(&artwork.warp.saturation) { min(2, original.warp.saturation * $0) }
+            follow(&artwork.effects.colourMix) { min(1, original.effects.colourMix * $0) }
+        default:
+            for i in artwork.layers.indices where artwork.layers[i].material != .image {
+                if let base = original.layers.first(where: { $0.id == artwork.layers[i].id }) {
+                    follow(&artwork.layers[i].opacity) { min(TrialGenerator.patternOpacityCap, base.opacity * $0) }
+                }
+            }
+            follow(&artwork.effects.grain) { min(0.3, original.effects.grain * $0) }
+        }
+    }
+    /// The Stretch control's range; Distortion above 100% may reach it.
+    static let maximumStretch = 4.5
 }
 
 enum SessionStage { case material, previews, refine }
@@ -52,22 +101,35 @@ enum Coverage {
     /// rounding of canvas sizes and resampling at the image boundary.
     static let margin = 1.02
     /// Smallest `layer.scale` at which the rotated, offset layer covers the whole canvas.
-    static func minimumCoverScale(canvasAspect r: Double, imageAspect k: Double, rotation: Double, x: Double, y: Double) -> Double {
+    /// A layer stretched by `stretch` along `stretchAngle` (canvas axes, about its centre)
+    /// needs less scale across that direction; 1 means no stretch.
+    static func minimumCoverScale(canvasAspect r: Double, imageAspect k: Double, rotation: Double, x: Double, y: Double,
+                                  stretch: Double = 1, stretchAngle: Double = 0) -> Double {
         // Size of the image at scale 1, and its centre relative to the canvas centre.
         let width = max(r, k), height = max(r / k, 1)
         let cx = r * x, cy = -y
         let angle = rotation * .pi / 180, c = cos(angle), s = sin(angle)
+        let along = stretchAngle * .pi / 180, sc = cos(along), ss = sin(along), f = max(1e-6, stretch)
         var needed = 0.0
         for (px, py) in [(-r/2, -0.5), (r/2, -0.5), (-r/2, 0.5), (r/2, 0.5)] {
-            // Each canvas corner, in the image's own (unrotated) axes.
-            let dx = px - cx, dy = py - cy
+            // Each canvas corner, unstretched, then in the image's own (unrotated) axes.
+            var dx = px - cx, dy = py - cy
+            if f != 1 {
+                let a = (sc * dx + ss * dy) / f, b = -ss * dx + sc * dy
+                dx = sc * a - ss * b; dy = ss * a + sc * b
+            }
             let u = c * dx + s * dy, v = -s * dx + c * dy
             needed = max(needed, 2 * abs(u) / width, 2 * abs(v) / height)
         }
         return needed
     }
-    static func covers(canvasAspect r: Double, imageAspect k: Double, scale: Double, rotation: Double, x: Double, y: Double) -> Bool {
-        minimumCoverScale(canvasAspect: r, imageAspect: k, rotation: rotation, x: x, y: y) <= scale + 1e-9
+    static func covers(canvasAspect r: Double, imageAspect k: Double, scale: Double, rotation: Double, x: Double, y: Double,
+                       stretch: Double = 1, stretchAngle: Double = 0) -> Bool {
+        minimumCoverScale(canvasAspect: r, imageAspect: k, rotation: rotation, x: x, y: y, stretch: stretch, stretchAngle: stretchAngle) <= scale + 1e-9
+    }
+    static func covers(_ layer: Layer, canvas ratio: Double) -> Bool {
+        !applies(to: layer) || covers(canvasAspect: ratio, imageAspect: aspect(of: layer, canvas: ratio), scale: layer.scale,
+                                      rotation: layer.rotation, x: layer.x, y: layer.y, stretch: layer.stretch, stretchAngle: layer.stretchAngle)
     }
     /// Width over height of what the Renderer draws for a layer: the image, or a canvas-sized pattern.
     static func aspect(of layer: Layer, canvas ratio: Double) -> Double {
@@ -84,7 +146,8 @@ enum Coverage {
         guard applies(to: layer) else { return }
         let k = aspect(of: layer, canvas: ratio)
         func needed(_ t: Double) -> Double {
-            margin * minimumCoverScale(canvasAspect: ratio, imageAspect: k, rotation: layer.rotation, x: layer.x * t, y: layer.y * t)
+            margin * minimumCoverScale(canvasAspect: ratio, imageAspect: k, rotation: layer.rotation, x: layer.x * t, y: layer.y * t,
+                                       stretch: layer.stretch, stretchAngle: layer.stretchAngle)
         }
         let scale = max(layer.scale, needed(0))
         // Allowed centres form a convex region containing the canvas centre, so
@@ -193,7 +256,8 @@ enum TrialGenerator {
         }
         return Array(result.prefix(count))
     }
-    static func compose(_ materials: [PreparedMaterial], style: CompositionStyle, aspect: String, seed: UInt64) -> Artwork {
+    /// A recipe: the style's base geometry, then the stages of `plan` (drawn from the seed when nil).
+    static func compose(_ materials: [PreparedMaterial], style: CompositionStyle, aspect: String, seed: UInt64, plan: StagePlan? = nil) -> Artwork {
         var random = RecipeRandom(seed: seed)
         var art = Artwork(); art.aspect = aspect
         guard !materials.isEmpty else { return art }
@@ -253,14 +317,17 @@ enum TrialGenerator {
             art.layers.append(pattern(random.pick([.dots, .noise]), 0.16, .softLight, random.value(6...18), 0))
             art.warp.wave = random.value(0...0.08)
         }
+        let stages = plan ?? self.plan(&random, quiet: random.value(0...1) < 0.2)
+        applyStages(stages, to: &art, picked: picked, materials: materials, random: &random)
         return art
     }
 
-    /// Zoom over exact coverage: a quarter are plain covering crops, half a moderate
-    /// zoom, and a quarter a strong detail crop.
+    /// Zoom over exact coverage. Strong detail crops are common so recognisable subjects
+    /// dissolve into colour and shape: a fifth are plain covering crops, two fifths a moderate
+    /// zoom, and two fifths a strong detail crop.
     static func zoom(_ random: inout RecipeRandom) -> Double {
         let roll = random.value(0...1)
-        return roll < 0.25 ? 1 : roll < 0.75 ? random.value(1.15...1.8) : random.value(2...3.4)
+        return roll < 0.2 ? 1 : roll < 0.6 ? random.value(1.2...1.9) : random.value(2...3.6)
     }
     /// Any angle occurs; small tilts and quarter turns are a little more likely than chance.
     static func angle(_ random: inout RecipeRandom) -> Double {
@@ -280,7 +347,20 @@ enum TrialGenerator {
         layer.scale = max(cover, min(4, cover * zoom))
         // A focus point in the image, in canvas-height units relative to the image centre.
         let width = max(ratio, k) * layer.scale, height = max(ratio / k, 1) * layer.scale
-        let u = random.value(-0.5...0.5) * width, v = random.value(-0.5...0.5) * height
+        var u = random.value(-0.5...0.5) * width, v = random.value(-0.5...0.5) * height
+        // Zoomed crops try a few focus points and keep the one with the clearest value
+        // structure, so detail crops become readable shapes rather than flat darkness.
+        if zoom > 1.15, let image = layer.image {
+            func score(_ u: Double, _ v: Double) -> Double {
+                image.valueStructure(x: 0.5 + u / width, y: 0.5 - v / height, half: 0.5 / max(1, layer.scale))
+            }
+            var best = score(u, v)
+            for _ in 0..<3 {
+                let cu = random.value(-0.5...0.5) * width, cv = random.value(-0.5...0.5) * height
+                let s = score(cu, cv)
+                if s > best { best = s; u = cu; v = cv }
+            }
+        }
         let angle = layer.rotation * .pi / 180
         let fx = cos(angle) * u - sin(angle) * v, fy = sin(angle) * u + cos(angle) * v
         // Centre the image so that point lands on the canvas centre (y runs downwards in the model).
@@ -310,8 +390,21 @@ enum TrialGenerator {
             if layer.material == .image {
                 if i > 0 {
                     layer.opacity = clamp(layer.opacity + shift(0.12), 0.1...1)
-                    if chance(0.15) { layer.blend = random.pick([.softLight, .screen, .normal, .multiply]) }
+                    if layer.mask == .none && chance(0.15) { layer.blend = random.pick([.softLight, .screen, .normal, .multiply]) }
                 }
+                if layer.stretch > 1.001 {
+                    layer.stretch = clamp(nudge(layer.stretch, 0.15), 1...Refinement.maximumStretch)
+                    layer.stretchAngle = wrap(layer.stretchAngle + shift(10), 90)
+                }
+                switch layer.mask {
+                case .none: break
+                case .bright, .dark: layer.maskPosition = clamp(layer.maskPosition + shift(0.08), 0.2...0.8)
+                case .linear: layer.maskPosition = clamp(layer.maskPosition + shift(0.08), -0.3...0.3); layer.maskAngle = wrap(layer.maskAngle + shift(25), 180)
+                case .radial:
+                    layer.maskPosition = clamp(nudge(layer.maskPosition, 0.15), 0.12...0.5)
+                    layer.maskX = clamp(layer.maskX + shift(0.08), 0.2...0.8); layer.maskY = clamp(layer.maskY + shift(0.08), 0.2...0.8)
+                }
+                if layer.mask != .none { layer.maskSoftness = clamp(nudge(layer.maskSoftness, 0.2), 0.05...0.45) }
             } else {
                 layer.frequency = clamp(nudge(layer.frequency, 0.35), 2...60)
                 layer.rotation = clamp(layer.rotation + shift(25), -180...180)
@@ -345,7 +438,79 @@ enum TrialGenerator {
         warp.centerY = clamp(warp.centerY + shift(0.15), 0...1)
         warp.saturation = clamp(warp.saturation + shift(0.15), 0...2)
         art.warp = warp
+        var effects = art.effects
+        effects.splitX = clamp(effects.splitX + shift(0.04), 0.35...0.65)
+        effects.splitY = clamp(effects.splitY + shift(0.04), 0.35...0.65)
+        // Nudges never revive a stage a control has turned off, and small hue shifts stay small.
+        if effects.colour == .hue {
+            effects.hue = abs(effects.hue) > 45 ? wrap(effects.hue + shift(25), 180) : clamp(effects.hue + shift(6), -45...45)
+        } else if effects.colour != .none && effects.colourMix > 0.001 { effects.colourMix = clamp(nudge(effects.colourMix, 0.15), 0...1) }
+        if effects.colour == .posterize && chance(0.2) { effects.levels = Int(clamp(Double(effects.levels + random.pick([-1, 1])), 4...7)) }
+        if effects.blur != .none && effects.blurAmount > 0.0001 && effects.blurMix > 0.001 {
+            effects.blurAmount = clamp(nudge(effects.blurAmount, 0.25), 0...0.1)
+            effects.blurAngle = wrap(effects.blurAngle + shift(20), 90)
+            effects.blurMix = clamp(nudge(effects.blurMix, 0.15), 0...1)
+        }
+        if effects.grain > 0 { effects.grain = clamp(nudge(effects.grain, 0.2), 0...0.3) }
+        art.effects = effects
+        // Bolder relatives sometimes swap one stage for another of its family; the rest stays.
+        if a > 1.1 && random.value(0...1) < 0.45 * (a - 1) {
+            var swapped = art
+            swapStage(&swapped, materials: materials, random: &random)
+            if withinBudget(swapped) { art = swapped }
+        }
+        // The whole relative keeps the budget whenever its base did.
+        if !withinBudget(art) && withinBudget(base) {
+            art.effects.colour = base.effects.colour; art.effects.hue = base.effects.hue
+            art.effects.colourMix = base.effects.colourMix; art.effects.colours = base.effects.colours
+            for i in art.layers.indices where i < base.layers.count {
+                art.layers[i].blend = base.layers[i].blend; art.layers[i].mask = base.layers[i].mask
+            }
+        }
         return art
+    }
+    static func withinBudget(_ art: Artwork) -> Bool {
+        let names = stages(of: art)
+        return names.filter(StagePlan.strong.contains).count <= StagePlan.strongLimit && StagePlan.weight(names) <= StagePlan.weightLimit
+    }
+    /// An angle in -half...half; stretch and motion blur repeat every 180°, masks every 360°.
+    static func wrap(_ angle: Double, _ half: Double) -> Double {
+        let period = 2 * half
+        var a = (angle + half).truncatingRemainder(dividingBy: period)
+        if a < 0 { a += period }
+        return a - half
+    }
+
+    /// Changes one stage of a recipe: another colour treatment, layering mode, mirror or blur.
+    static func swapStage(_ art: inout Artwork, materials: [PreparedMaterial], random: inout RecipeRandom) {
+        let base = art.layers.first { $0.material == .image }
+        let own = materials.first { $0.layer.image === base?.image }?.colours ?? materials.first?.colours ?? SourcePalette.colours(nil)
+        let others = materials.filter { $0.layer.image !== base?.image }.map(\.colours)
+        switch random.pick([0, 1, 2, 3]) {
+        case 0:
+            guard art.effects.colour == .none || art.effects.colourMix > 0.001 else { return }
+            let options = ColourTreatment.allCases.filter { $0 != .none && $0 != art.effects.colour }
+            colour(random.pick(options), &art.effects, palette: own, others: others, random: &random)
+        case 1:
+            let secondary = art.layers.indices.filter { art.layers[$0].material == .image && art.layers[$0].image !== base?.image }
+            guard let i = secondary.isEmpty ? nil : random.pick(secondary) else { return }
+            switch art.layers[i].mask {
+            case .bright: art.layers[i].mask = .dark
+            case .dark: art.layers[i].mask = .bright
+            case .linear, .radial: luminosityMask(&art.layers[i], random: &random)
+            case .none: fade(&art.layers[i], random: &random)
+            }
+        case 2:
+            if art.effects.symmetry == .none { mirror(&art.effects, random: &random) }
+            else { art.effects.symmetry = random.pick(Symmetry.allCases.filter { $0 != .none && $0 != art.effects.symmetry }) }
+        default:
+            guard art.effects.blur == .none || (art.effects.blurAmount > 0.0001 && art.effects.blurMix > 0.001) else { return }
+            switch art.effects.blur {
+            case .motion: blur(.zoom, &art.effects, random: &random)
+            case .zoom: blur(.motion, &art.effects, random: &random)
+            case .none: blur(random.pick([.motion, .zoom]), &art.effects, random: &random)
+            }
+        }
     }
 
     static func contactSheet(_ trials: [Trial]) -> Data? {

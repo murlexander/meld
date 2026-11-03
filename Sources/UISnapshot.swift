@@ -77,6 +77,17 @@ enum UISnapshot {
         snap("6-refine-dark", appearance: .darkAqua)
         studio.showTrials()
         snap("7-back-to-previews")
+        // More controls for a preview with a masked layer and whole-image stages, in a tall window.
+        RefinementView.startsDetailed = true
+        let staged = studio.orderedTrials.first { t in t.art.layers.contains { $0.mask != .none } && t.art.effects.colour != .none }
+            ?? studio.orderedTrials.first { t in t.art.layers.contains { $0.mask != .none } } ?? studio.orderedTrials[0]
+        window.setFrame(CGRect(x: -30000, y: -30000, width: 1280, height: 1500), display: false)
+        studio.openTrial(staged.id); wait { !studio.rendering }
+        snap("9a-more-controls-canvas")
+        if let masked = staged.art.layers.first(where: { $0.mask != .none }) { studio.selected = masked.id }
+        snap("9b-more-controls-layer")
+        studio.showTrials(); RefinementView.startsDetailed = false
+        window.setFrame(regularFrame, display: false)
         studio.chooseMaterial()
         snap("8-back-to-material")
         window.close()

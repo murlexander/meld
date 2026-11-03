@@ -10,9 +10,7 @@ enum PerformanceTests {
             print("PASS: \(message)")
         }
         func wait(_ condition: () -> Bool) {
-            let deadline = Date().addingTimeInterval(60)
-            while !condition() && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.005)) }
-            check(condition(), "performance workflow settles")
+            check(SelfTest.settle(condition, step: 0.005), "performance workflow settles")
         }
         func samePixels(_ a: CGImage, _ b: CGImage) -> Bool {
             guard a.width == b.width, a.height == b.height else { return false }

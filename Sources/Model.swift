@@ -10,11 +10,67 @@ enum Material: String, CaseIterable {
     }
 }
 enum Blend: String, CaseIterable {
-    case normal, multiply, screen, overlay, difference, softLight
-    var label: String { self == .softLight ? "Soft light" : rawValue.capitalized }
-    var filter: String {
-        switch self { case .normal: return "CISourceOverCompositing"; case .multiply: return "CIMultiplyBlendMode"; case .screen: return "CIScreenBlendMode"; case .overlay: return "CIOverlayBlendMode"; case .difference: return "CIDifferenceBlendMode"; case .softLight: return "CISoftLightBlendMode" }
+    case normal, multiply, screen, overlay, softLight, hardLight, colorDodge, colorBurn, difference, exclusion, luminosity, color
+    var label: String {
+        switch self {
+        case .softLight: return "Soft light"; case .hardLight: return "Hard light"
+        case .colorDodge: return "Colour dodge"; case .colorBurn: return "Colour burn"; case .color: return "Colour"
+        default: return rawValue.capitalized
+        }
     }
+    var filter: String {
+        switch self {
+        case .normal: return "CISourceOverCompositing"; case .multiply: return "CIMultiplyBlendMode"; case .screen: return "CIScreenBlendMode"
+        case .overlay: return "CIOverlayBlendMode"; case .difference: return "CIDifferenceBlendMode"; case .softLight: return "CISoftLightBlendMode"
+        case .hardLight: return "CIHardLightBlendMode"; case .colorDodge: return "CIColorDodgeBlendMode"; case .colorBurn: return "CIColorBurnBlendMode"
+        case .exclusion: return "CIExclusionBlendMode"; case .luminosity: return "CILuminosityBlendMode"; case .color: return "CIColorBlendMode"
+        }
+    }
+}
+/// Where an image layer shows: everywhere, where the layers below are bright or dark, or along a soft fade.
+enum MaskKind: String, CaseIterable {
+    case none, bright, dark, linear, radial
+    var label: String {
+        switch self { case .none: return "None"; case .bright: return "Bright areas"; case .dark: return "Dark areas"; case .linear: return "Linear fade"; case .radial: return "Radial fade" }
+    }
+}
+enum Symmetry: String, CaseIterable {
+    case none, vertical, horizontal, both
+    var label: String {
+        switch self { case .none: return "Off"; case .vertical: return "Left · right"; case .horizontal: return "Top · bottom"; case .both: return "Four ways" }
+    }
+}
+enum ColourTreatment: String, CaseIterable {
+    case none, gradientMap, paletteSwap, posterize, hue
+    var label: String {
+        switch self { case .none: return "None"; case .gradientMap: return "Gradient map"; case .paletteSwap: return "Palette swap"; case .posterize: return "Posterize"; case .hue: return "Hue shift" }
+    }
+}
+enum BlurKind: String, CaseIterable {
+    case none, motion, zoom
+    var label: String { self == .none ? "Off" : rawValue.capitalized }
+}
+/// Whole-composite stages that simplify a preview into a painting idea. Every default means off.
+struct Effects: Equatable {
+    var symmetry = Symmetry.none
+    /// Mirror axes as fractions of the width and of the height from the top.
+    var splitX = 0.5
+    var splitY = 0.5
+    var colour = ColourTreatment.none
+    /// How much of the colour treatment replaces the original colours; hue shift scales its angle.
+    var colourMix = 0.0
+    /// Gradient map and palette swap colours, dark to light.
+    var colours: [Ink] = []
+    var levels = 6
+    var hue = 0.0
+    var blur = BlurKind.none
+    /// Blur length as a fraction of the long edge.
+    var blurAmount = 0.0
+    var blurAngle = 0.0
+    var blurMix = 0.5
+    /// Fine surface texture: grey noise at this opacity.
+    var grain = 0.0
+    var grainBlend = Blend.softLight
 }
 struct Ink: Equatable {
     var r: Double; var g: Double; var b: Double
@@ -41,6 +97,17 @@ struct Layer: Identifiable, Equatable {
     var y = 0.0
     var frequency = 12.0
     var tiles = 1 // Mirrored image repeats; 1 keeps the original photograph.
+    /// Extra scale along `stretchAngle` (degrees, canvas axes) around the layer centre; 1 is off.
+    var stretch = 1.0
+    var stretchAngle = 0.0
+    var mask = MaskKind.none
+    /// Luminance threshold (bright/dark), edge offset from the centre in canvas heights (linear),
+    /// or radius as a fraction of the long edge (radial).
+    var maskPosition = 0.5
+    var maskSoftness = 0.2
+    var maskAngle = 0.0
+    var maskX = 0.5
+    var maskY = 0.5
     var ink = Ink(0.17, 0.23, 0.38)
     var paper = Ink(0.95, 0.76, 0.42)
 }
@@ -58,6 +125,7 @@ struct Warp: Equatable {
 struct Artwork: Equatable {
     var layers: [Layer] = [] // bottom to top
     var warp = Warp()
+    var effects = Effects()
     var aspect = "Square"
     var background = Ink(0.92, 0.9, 0.85)
     var ratio: Double { aspect == "Portrait" ? 0.8 : aspect == "Landscape" ? 1.4 : 1 }
@@ -569,13 +637,14 @@ final class Studio: ObservableObject {
                     return
                 }
                 let styles = TrialGenerator.styles(count: count, seed: seed)
+                let plans = TrialGenerator.plans(count: count, seed: seed)
                 var produced = 0
                 // Previews render concurrently on the shared context and arrive in number order.
                 Concurrent.ordered(styles.count, width: 3, stop: { task.cancelled }) { i -> Trial? in
                     let pool = gatherer.pool(atLeast: poolSize(i))
                     if task.cancelled { return nil }
                     return autoreleasepool {
-                        let art = TrialGenerator.compose(pool, style: styles[i], aspect: aspect, seed: seed &+ UInt64(i+1))
+                        let art = TrialGenerator.compose(pool, style: styles[i], aspect: aspect, seed: seed &+ UInt64(i+1), plan: plans[i])
                         guard let image = renderer.render(art, longEdge: 480) else { return nil }
                         return Trial(number: i+1, style: styles[i], art: art, thumbnail: image)
                     }
@@ -837,22 +906,14 @@ final class Studio: ObservableObject {
     }
     var activeTrial: Trial? { trials.first { $0.id == activeTrialID } }
     func setRefinement(_ key: String, value: Double) {
-        guard let original = activeTrial?.original, value.isFinite, ["distortion", "pattern"].contains(key) else { return }
-        change(key) { artwork in
-            if key == "distortion" {
-                artwork.warp.wave = original.warp.wave * value
-                artwork.warp.twist = original.warp.twist * value
-                artwork.warp.bulge = min(0.9, max(-0.9, original.warp.bulge * value))
-                artwork.warp.pixel = min(1, original.warp.pixel * value)
-            } else {
-                for i in artwork.layers.indices where artwork.layers[i].material != .image {
-                    if let base = original.layers.first(where: { $0.id == artwork.layers[i].id }) {
-                        artwork.layers[i].opacity = min(1, base.opacity * value)
-                    }
-                }
-            }
+        guard let original = activeTrial?.original, value.isFinite, ["distortion", "pattern", "colour"].contains(key) else { return }
+        let previous = key == "distortion" ? refinement.distortion : key == "colour" ? refinement.colour : refinement.pattern
+        change(key) { Refinement.apply(key, value: value, previous: previous, original: original, to: &$0) }
+        switch key {
+        case "distortion": refinement.distortion = value
+        case "colour": refinement.colour = value
+        default: refinement.pattern = value
         }
-        if key == "distortion" { refinement.distortion = value } else { refinement.pattern = value }
     }
     func resetActiveTrial() {
         guard let trial = activeTrial else { return }

@@ -3,6 +3,18 @@ import ImageIO
 
 @MainActor
 enum SelfTest {
+    /// Runs the main loop until `condition` holds. It fails after 60 seconds without any
+    /// finished render, so a slow machine (for example throttled on battery) may take longer
+    /// while renders keep completing, but a real hang still fails.
+    static func settle(_ condition: () -> Bool, step: TimeInterval) -> Bool {
+        var lastFinished = Renderer.finished, deadline = Date().addingTimeInterval(60)
+        while !condition() && Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(step))
+            let finished = Renderer.finished
+            if finished != lastFinished { lastFinished = finished; deadline = Date().addingTimeInterval(60) }
+        }
+        return condition()
+    }
     static func run() {
         setbuf(stdout, nil)
         let output = URL(fileURLWithPath: CommandLine.arguments.last ?? "/private/tmp/meld-checks", isDirectory: true)
@@ -16,9 +28,7 @@ enum SelfTest {
                 print("PASS: \(message)")
             }
             func waitFor(_ condition: () -> Bool) {
-                let deadline = Date().addingTimeInterval(60)
-                while !condition() && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
-                check(condition(), "background material operation completes")
+                check(settle(condition, step: 0.01), "background material operation completes")
             }
             func hash(_ cg: CGImage) -> UInt64 {
                 let bytes = cg.dataProvider!.data! as Data
@@ -219,8 +229,9 @@ enum SelfTest {
             library.randomize(); waitFor { !library.gathering }
             let mixed = library.art
             let picked = mixed.layers.filter { $0.material == .image }
-            check((2...3).contains(picked.count) && picked.allSatisfy { $0.image != nil && $0.sourcePath != nil }, "Surprise me loads random source images")
-            check(Set(picked.compactMap(\.sourcePath)).count == picked.count, "a composition never selects the same file twice")
+            let pickedFiles = Set(picked.compactMap(\.sourcePath))
+            check((2...3).contains(pickedFiles.count) && picked.allSatisfy { $0.image != nil && $0.sourcePath != nil }, "Surprise me loads random source images")
+            check(picked.count - pickedFiles.count <= 1, "a composition selects distinct files; only an echo stage repeats one")
             check(mixed.layers.contains { $0.material != .image }, "source compositions include a pattern")
             check(renderer.render(mixed, longEdge: 320) != nil, "folder composition renders")
             library.undo(); check(library.art == originalArt, "undo restores the canvas before folder surprise")
@@ -244,7 +255,7 @@ enum SelfTest {
             nestedStudio.setSourceFolder(nestedOnly); waitFor { !nestedStudio.sourceScanning }
             check(nestedStudio.sourceCount == 1, "source scan finds images two subfolders deep")
             nestedStudio.randomize(); waitFor { !nestedStudio.gathering }
-            check(nestedStudio.error == nil && nestedStudio.art.layers.filter { $0.material == .image }.map(\.sourcePath) == [deepFolder.appendingPathComponent("photo.png").path],
+            check(nestedStudio.error == nil && Set(nestedStudio.art.layers.filter { $0.material == .image }.map(\.sourcePath)) == [deepFolder.appendingPathComponent("photo.png").path],
                   "Surprise me uses images when only subfolders contain material")
             let empty = output.appendingPathComponent("empty-\(UUID())", isDirectory: true)
             try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
@@ -273,7 +284,7 @@ enum SelfTest {
                 try rawOriginal.write(to: rawFolder.appendingPathComponent("photo.NEF"))
                 let rawStudio = Studio(restoreSource: false); rawStudio.setSourceFolder(rawFolder)
                 waitFor { !rawStudio.sourceScanning }; rawStudio.randomize(); waitFor { !rawStudio.gathering }
-                check(rawStudio.art.layers.filter { $0.material == .image }.count == 1 && rawStudio.error == nil, "Surprise me works in a RAW-only folder")
+                check(Set(rawStudio.art.layers.filter { $0.material == .image }.map(\.sourcePath)).count == 1 && rawStudio.error == nil, "Surprise me works in a RAW-only folder")
                 check(renderer.render(rawStudio.art, longEdge: 320) != nil, "RAW-based experiment renders")
             }
             try TrialTests.run(output: output)
