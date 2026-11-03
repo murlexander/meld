@@ -120,6 +120,35 @@ enum PipelineTests {
         print(String(format: "  noise vs Core Graphics cell fills: max difference %d/255, mean %.3f/255", noiseWorst, noiseMean))
         check(noiseWorst <= 3 && noiseMean < 0.25, "noise patterns match Core Graphics cell fills to within a few levels at their edges")
 
+        // Exports compress in parallel strips to the same PNG layout as ImageIO, with exact pixels.
+        func chunks(_ data: Data) -> [(type: String, body: Data)] {
+            var result: [(String, Data)] = [], i = 8
+            let bytes = [UInt8](data)
+            while i + 8 <= bytes.count {
+                let length = bytes[i..<i + 4].reduce(0) { $0 << 8 | Int($1) }
+                result.append((String(decoding: bytes[i + 4..<i + 8], as: UTF8.self), Data(bytes[i + 8..<min(bytes.count, i + 8 + length)])))
+                i += 12 + length
+            }
+            return result
+        }
+        func decoded(_ data: Data?) -> CGImage? {
+            data.flatMap { CGImageSourceCreateWithData($0 as CFData, nil) }.flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) }
+        }
+        let strips = PNGExport.stripped(full), reference = PNGExport.imageIO(full)!
+        check(strips != nil && decoded(strips).map(rgba) == rgba(full) && decoded(strips).map(rgba) == decoded(reference).map(rgba),
+              "strip-compressed PNG exports decode to exactly the rendered pixels")
+        check(strips.map { chunks($0).filter { $0.type != "IDAT" }.map { "\($0.type) \($0.body.base64EncodedString())" } }
+              == chunks(reference).filter { $0.type != "IDAT" }.map { "\($0.type) \($0.body.base64EncodedString())" },
+              "strip-compressed PNGs keep ImageIO's header, sRGB and Exif chunks")
+        let thin = renderer.render(tiled, longEdge: 20)!
+        check(thin.height < 16 && decoded(PNGExport.stripped(thin)).map(rgba) == rgba(thin), "images shorter than the strip count still compress exactly")
+        let translucent = Renderer.canvas(w: 64, h: 48)!
+        translucent.setFillColor(CGColor(red: 0.8, green: 0.3, blue: 0.2, alpha: 0.5)); translucent.fill(CGRect(x: 0, y: 0, width: 32, height: 48))
+        let clear = CGImage(width: 64, height: 48, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: translucent.bytesPerRow,
+                            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                            provider: translucent.makeImage()!.dataProvider!, decode: nil, shouldInterpolate: false, intent: .defaultIntent)!
+        check(PNGExport.stripped(clear) == nil && decoded(PNGExport.data(clear)) != nil, "images with transparency are left to ImageIO")
+
         // A generated set keeps numbering, balance and progressive delivery under concurrency.
         let setFolder = output.appendingPathComponent("pipeline-set", isDirectory: true)
         try FileManager.default.createDirectory(at: setFolder, withIntermediateDirectories: true)

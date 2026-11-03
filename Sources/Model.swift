@@ -822,9 +822,8 @@ final class Studio: ObservableObject {
             guard let self else { return }
             let data: (png: Data, tiff: Data?)? = autoreleasepool {
                 guard let cg = Renderer.renderAlone(snapshot, longEdge: 2400) else { return nil }
-                let rep = NSBitmapImageRep(cgImage: cg)
-                guard let png = rep.representation(using: .png, properties: [:]) else { return nil }
-                return (png, rep.tiffRepresentation)
+                guard let png = PNGExport.data(cg) else { return nil }
+                return (png, NSBitmapImageRep(cgImage: cg).tiffRepresentation)
             }
             DispatchQueue.main.async {
                 self.copying = false
@@ -859,7 +858,7 @@ final class Studio: ObservableObject {
                     let url = folder.appendingPathComponent("\(name).png")
                     try autoreleasepool {
                         guard let cg = Renderer.renderAlone(snapshot, longEdge: 2400),
-                              let png = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:]) else { throw CocoaError(.fileWriteUnknown) }
+                              let png = PNGExport.data(cg) else { throw CocoaError(.fileWriteUnknown) }
                         try png.write(to: url)
                     }
                     completion(url, false, nil)
