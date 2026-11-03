@@ -8,6 +8,14 @@ final class Renderer {
     static var finished: Int { finishedLock.lock(); defer { finishedLock.unlock() }; return finishedCount }
     // Bound render-task memory as well as disabling cached intermediate buffers.
     let context = CIContext(options: [.cacheIntermediates: false, .memoryTarget: 128])
+    /// Renders one image on a context of its own, released with it. A context keeps the
+    /// intermediate surfaces it has used for reuse, and full-size renders of different recipes
+    /// need surfaces of many sizes: one shared export context grew past 1 GB within a few
+    /// images. A context per image costs a few milliseconds and frees them after each image.
+    static func renderAlone(_ art: Artwork, longEdge: Int) -> CGImage? {
+        // Release the context before the caller encodes, not when its own pool drains.
+        autoreleasepool { Renderer().render(art, longEdge: longEdge) }
+    }
     func render(_ art: Artwork, longEdge: Int, bypass: Bool = false) -> CGImage? {
         let ratio = art.ratio
         let w = ratio >= 1 ? longEdge : Int(Double(longEdge) * ratio)

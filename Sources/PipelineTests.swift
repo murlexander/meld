@@ -144,7 +144,7 @@ enum PipelineTests {
         let exportFolder = output.appendingPathComponent("pipeline-export", isDirectory: true)
         try FileManager.default.createDirectory(at: exportFolder, withIntermediateDirectories: true)
         var reported: [Int] = []
-        let outcome = TrialExporter.write(picks, into: exportFolder, renderer: Renderer(), cancelled: { false }) { reported.append($0) }
+        let outcome = TrialExporter.write(picks, into: exportFolder, cancelled: { false }) { reported.append($0) }
         check(outcome.failure == nil && outcome.exported.map(\.id) == picks.map(\.id) && reported == Array(1...8),
               "parallel export returns picks in their chosen order with steady progress")
         let serial = Renderer()

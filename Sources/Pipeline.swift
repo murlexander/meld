@@ -129,14 +129,14 @@ enum TrialExporter {
 
     /// Renders and writes 2400-pixel PNGs a few at a time. Cancellation stops new work
     /// and is checked again before encoding and writing; finished files are kept.
-    static func write(_ chosen: [Trial], into folder: URL, renderer: Renderer, width: Int = 4,
+    static func write(_ chosen: [Trial], into folder: URL, width: Int = 4,
                       cancelled: () -> Bool, progress: (Int) -> Void) -> Outcome {
         var outcome = Outcome()
         // PNG compression is the slow, CPU-bound part, so several encode at once. Renders
         // take turns: each concurrent GPU render grew the retained footprint by about 250 MB.
         let renderLane = NSLock()
         Concurrent.ordered(chosen.count, width: width, stop: { cancelled() || outcome.failure != nil }) { i -> Result<Trial?, Error> in
-            Result { try autoreleasepool { try export(chosen[i], into: folder, renderer: renderer, renderLane: renderLane, cancelled: cancelled) } }
+            Result { try autoreleasepool { try export(chosen[i], into: folder, renderLane: renderLane, cancelled: cancelled) } }
         } deliver: { _, result in
             switch result {
             case .success(let trial?): outcome.exported.append(trial); progress(outcome.exported.count)
@@ -147,11 +147,11 @@ enum TrialExporter {
         return outcome
     }
 
-    private static func export(_ trial: Trial, into folder: URL, renderer: Renderer, renderLane: NSLock,
+    private static func export(_ trial: Trial, into folder: URL, renderLane: NSLock,
                                cancelled: () -> Bool) throws -> Trial? {
         if cancelled() { return nil }
         renderLane.lock()
-        let rendered = renderer.render(trial.art, longEdge: 2400)
+        let rendered = Renderer.renderAlone(trial.art, longEdge: 2400)
         renderLane.unlock()
         guard let cg = rendered else { throw CocoaError(.fileWriteUnknown) }
         if cancelled() { return nil }

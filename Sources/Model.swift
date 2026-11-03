@@ -231,10 +231,8 @@ final class Studio: ObservableObject {
     private var previewVisit = 0
     let renderer = Renderer()
     private let batchRenderer = Renderer()
+    /// Exports, copies and drags render full size on a context of their own (`Renderer.renderAlone`).
     private let exportQueue = DispatchQueue(label: "Meld.export", qos: .userInitiated)
-    private let exportRenderer = Renderer()
-    /// Core Image contexts are thread-safe; drags share one instead of creating a context each time.
-    private let dragRenderer = Renderer()
     var current: Layer? { art.layers.first { $0.id == selected } }
     var canUndo: Bool { !history.isEmpty }
     var canRedo: Bool { !future.isEmpty }
@@ -823,7 +821,7 @@ final class Studio: ObservableObject {
         exportQueue.async { [weak self] in
             guard let self else { return }
             let data: (png: Data, tiff: Data?)? = autoreleasepool {
-                guard let cg = self.exportRenderer.render(snapshot, longEdge: 2400) else { return nil }
+                guard let cg = Renderer.renderAlone(snapshot, longEdge: 2400) else { return nil }
                 let rep = NSBitmapImageRep(cgImage: cg)
                 guard let png = rep.representation(using: .png, properties: [:]) else { return nil }
                 return (png, rep.tiffRepresentation)
@@ -845,7 +843,7 @@ final class Studio: ObservableObject {
         storeActiveTrial()
         let provider = NSItemProvider()
         guard let trial = trials.first(where: { $0.id == id }) else { return provider }
-        let snapshot = trial.art, name = "Meld \(trial.title)", renderer = dragRenderer
+        let snapshot = trial.art, name = "Meld \(trial.title)"
         provider.suggestedName = name
         provider.registerFileRepresentation(forTypeIdentifier: UTType.png.identifier, fileOptions: [], visibility: .all) { completion in
             DispatchQueue.global(qos: .userInitiated).async {
@@ -860,7 +858,7 @@ final class Studio: ObservableObject {
                     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
                     let url = folder.appendingPathComponent("\(name).png")
                     try autoreleasepool {
-                        guard let cg = renderer.render(snapshot, longEdge: 2400),
+                        guard let cg = Renderer.renderAlone(snapshot, longEdge: 2400),
                               let png = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:]) else { throw CocoaError(.fileWriteUnknown) }
                         try png.write(to: url)
                     }
@@ -961,13 +959,11 @@ final class Studio: ObservableObject {
             // A fixed locale keeps the 24-hour folder name regardless of the user's clock setting.
             formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.dateFormat = "yyyy-MM-dd HH.mm.ss"
             let folder = parent.appendingPathComponent("Meld picks \(formatter.string(from: Date())) \(UUID().uuidString.prefix(6))", isDirectory: true)
-            let renderer = self.exportRenderer
-            defer { renderer.context.clearCaches() }
             var completed = 0
             do {
                 try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
                 // A few picks render and encode at once; the contact sheet keeps their chosen order.
-                let outcome = TrialExporter.write(chosen, into: folder, renderer: renderer, cancelled: { task.cancelled }) { progress in
+                let outcome = TrialExporter.write(chosen, into: folder, cancelled: { task.cancelled }) { progress in
                     DispatchQueue.main.async { self.trialExportProgress = progress }
                 }
                 let exported = outcome.exported
@@ -1005,10 +1001,9 @@ final class Studio: ObservableObject {
         exporting = true; let snapshot = art
         exportQueue.async { [weak self] in
             guard let self else { return }
-            defer { self.exportRenderer.context.clearCaches() }
             do {
                 try autoreleasepool {
-                    guard let cg = self.exportRenderer.render(snapshot, longEdge: 2400),
+                    guard let cg = Renderer.renderAlone(snapshot, longEdge: 2400),
                           let data = PNGExport.data(cg) else { throw CocoaError(.fileWriteUnknown) }
                     try data.write(to: url, options: .atomic)
                 }
