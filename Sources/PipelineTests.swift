@@ -101,6 +101,25 @@ enum PipelineTests {
         let wave = Renderer.waveMap(w: 2400, h: 1600, frequency: 3)!
         check(wave.extent == CGRect(x: 0, y: 0, width: 2400, height: 1600), "wave displacement map covers the full canvas")
 
+        // Noise is written straight into the bitmap; it matches filling each cell with Core Graphics.
+        var noiseWorst = 0, noiseMean = 0.0
+        for (w, h, frequency) in [(240, 240, 60.0), (480, 384, 23.0), (300, 500, 7.0)] {
+            let layer = Layer(name: "n", material: .noise, frequency: frequency, ink: Ink(0.17, 0.23, 0.38), paper: Ink(0.95, 0.76, 0.42))
+            let reference = Renderer.canvas(w: w, h: h)!
+            reference.setFillColor(layer.paper.cg); reference.fill(CGRect(x: 0, y: 0, width: w, height: h))
+            let cell = Double(max(w, h)) / frequency / 8
+            var seed: UInt64 = 812367
+            for y in 0..<Int(ceil(Double(h) / cell)) { for x in 0..<Int(ceil(Double(w) / cell)) {
+                seed = seed &* 6364136223846793005 &+ 1
+                reference.setFillColor(layer.paper.mixed(with: layer.ink, amount: Double((seed >> 33) % 1000) / 999).cg)
+                reference.fill(CGRect(x: Double(x) * cell, y: Double(y) * cell, width: cell, height: cell))
+            }}
+            let difference = meanDifference(rgba(Renderer.pattern(layer, w: w, h: h)!), rgba(reference.makeImage()!))
+            noiseWorst = max(noiseWorst, difference.max); noiseMean = max(noiseMean, difference.mean)
+        }
+        print(String(format: "  noise vs Core Graphics cell fills: max difference %d/255, mean %.3f/255", noiseWorst, noiseMean))
+        check(noiseWorst <= 3 && noiseMean < 0.25, "noise patterns match Core Graphics cell fills to within a few levels at their edges")
+
         // A generated set keeps numbering, balance and progressive delivery under concurrency.
         let setFolder = output.appendingPathComponent("pipeline-set", isDirectory: true)
         try FileManager.default.createDirectory(at: setFolder, withIntermediateDirectories: true)

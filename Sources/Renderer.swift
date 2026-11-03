@@ -256,18 +256,54 @@ final class Renderer {
                 ctx.strokeEllipse(in: CGRect(x: Double(w) / 2 - diameter / 2, y: Double(h) / 2 - diameter / 2, width: diameter, height: diameter))
             }
         case .noise:
-            var seed: UInt64 = 812367
             // Keep the same logical noise cells at thumbnail, preview, and export sizes.
-            let cell = step / 8
-            for y in 0..<Int(ceil(Double(h) / cell)) { for x in 0..<Int(ceil(Double(w) / cell)) {
-                seed = seed &* 6364136223846793005 &+ 1
-                let v = Double((seed >> 33) % 1000) / 999
-                ctx.setFillColor(CGColor(red: l.paper.r * (1-v) + l.ink.r*v, green: l.paper.g*(1-v)+l.ink.g*v, blue: l.paper.b*(1-v)+l.ink.b*v, alpha: 1))
-                ctx.fill(CGRect(x: Double(x) * cell, y: Double(y) * cell, width: cell, height: cell))
-            }}
+            noise(l, into: ctx, cell: step / 8)
         case .image: break
         }
         return ctx.makeImage()
+    }
+    /// Square cells of seeded mixes between paper and ink, filled in order over the paper as
+    /// anti-aliased Core Graphics rectangles would be, but written straight into the bitmap.
+    /// Filling up to 230,000 cells one call at a time took up to a second per preview. Core
+    /// Graphics still converts the 1000 possible colours; partially covered edge pixels follow
+    /// its coverage and blending to within one level.
+    private static func noise(_ l: Layer, into ctx: CGContext, cell: Double) {
+        let w = ctx.width, h = ctx.height, stride = ctx.bytesPerRow
+        guard cell > 0, let pixels = ctx.data?.assumingMemoryBound(to: UInt8.self), let palette = canvas(w: 1000, h: 1),
+              let colours = palette.data?.assumingMemoryBound(to: UInt8.self) else { return }
+        for i in 0..<1000 {
+            let v = Double(i) / 999
+            palette.setFillColor(CGColor(red: l.paper.r * (1-v) + l.ink.r*v, green: l.paper.g*(1-v)+l.ink.g*v, blue: l.paper.b*(1-v)+l.ink.b*v, alpha: 1))
+            palette.fill(CGRect(x: i, y: 0, width: 1, height: 1))
+        }
+        // Cell edges in 1/256 pixel, as Core Graphics snaps them.
+        func snap(_ v: Double) -> Int { Int((v * 256).rounded()) }
+        let rows = Int(ceil(Double(h) / cell)), columns = Int(ceil(Double(w) / cell))
+        let lows = (0..<max(rows, columns)).map { snap(Double($0) * cell) }
+        let highs = (0..<max(rows, columns)).map { snap(Double($0) * cell + cell) }
+        var seed: UInt64 = 812367
+        for y in 0..<rows {
+            let ya = lows[y], yb = highs[y]
+            for x in 0..<columns {
+                seed = seed &* 6364136223846793005 &+ 1
+                let colour = colours + Int((seed >> 33) % 1000) * 4
+                let xa = lows[x], xb = highs[x]
+                for py in (ya >> 8)..<min(h, (yb + 255) >> 8) {
+                    let cy = min(yb, (py + 1) << 8) - max(ya, py << 8)
+                    guard cy > 0 else { continue }
+                    // Bitmap rows run from the top; cell rows from the bottom.
+                    let row = pixels + (h - 1 - py) * stride
+                    for px in (xa >> 8)..<min(w, (xb + 255) >> 8) {
+                        let cx = min(xb, (px + 1) << 8) - max(xa, px << 8)
+                        guard cx > 0 else { continue }
+                        let coverage = (cx * cy + 128) >> 8, p = row + px * 4
+                        if coverage >= 256 { p[0] = colour[0]; p[1] = colour[1]; p[2] = colour[2]; continue }
+                        let a = 255 * coverage / 256
+                        for c in 0..<3 { p[c] = UInt8((Int(colour[c]) * a + Int(p[c]) * (255 - a)) / 255) }
+                    }
+                }
+            }
+        }
     }
     static func waveMap(w: Int, h: Int, frequency: Double) -> CIImage? {
         // A small displacement map scales smoothly at preview and export sizes.
