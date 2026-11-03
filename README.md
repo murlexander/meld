@@ -9,17 +9,22 @@ Future updates may bring Meld and Louppe together within a broader archive for a
 ## Current workflow
 
 1. Choose a source folder and a square, portrait, or landscape format.
-2. **Generate 36 previews** (⌘R). Each set explores six styles, with RAW files and subfolders included.
-3. Click a promising preview to refine it. Adjust distortion, pattern amount, colour, and contrast; star it as a pick.
-4. Return to **Previews**. Your edits stay with each image. **Export picks** writes 2400-pixel PNGs and a contact sheet of the adjusted results.
+2. **Generate 36 previews** (⌘R). Each set explores five styles, with RAW files and subfolders included.
+3. Browse like Photos: click to select, double-click or Return to refine, arrow keys to move. **F** picks and **D** unpicks, as in Louppe.
+4. **Variations** (V or ⌥⌘R) adds a row of 12 relatives of the selected preview, from close to bold, using images already in memory.
+5. Refine a preview: adjust distortion, pattern amount, colour, and contrast; More controls exposes masks, mirror, colour treatment, blur and grain. Step through previews with ⌘[ and ⌘]; Esc returns to the grid. Your edits stay with each image.
+6. Check composition with the **Values** and **Notan** views (⌘2, ⌘3), and copy the preview's palette as hex values.
+7. **Export picks** writes 2400-pixel PNGs and a contact sheet with palettes. Copy Image (⇧⌘C) or drag a preview into another app for a single full-size PNG.
+
+A new set keeps your picks in their own rows and replaces the rest. Sessions are still temporary: export picks before closing the app. The last source folder is remembered without scanning at startup.
 
 The previews are the main workspace. Layer and detailed canvas controls are available under **More controls** when needed. Compare with the generated original or reset a preview; undo/redo applies to its adjustments.
 
-Export your picks before generating a new set or closing the app. Sessions are temporary; the last source folder is remembered without scanning at startup.
-
-The generator explores Flow, Vortex, Blocks, Collage, Weave, and mirrored Tiles, using colours sampled from the source images. It starts showing previews while gathering the remaining material. RAW files use macOS's decoder; smaller working previews speed up exploration while developed images are retained for export. Embedded camera previews are a fallback when native development is unavailable.
+Meld is a generator of abstract art ideas for painting. It explores Flow, Vortex, Blocks, Detail, and mirrored Tiles, placing every photo full-bleed (a turned, often strongly zoomed crop, never showing its edges), using colours sampled from the source images. Each preview adds a few independent stages that simplify it into colour and shape: mirror symmetry or stretch, double exposures and soft fades between photos, a gradient map, palette swap or value bands, and motion or zoom blur. A set ranges from quiet to bold, without repeating a combination. It starts showing previews while gathering the remaining material. RAW files use macOS's decoder; smaller working previews speed up exploration while developed images are retained for export. Embedded camera previews are a fallback when native development is unavailable.
 
 The interface uses native macOS controls, Liquid Glass on macOS 26+, and a restrained teal accent. Image processing runs locally; original source files are not modified.
+
+Planned work is in the [backlog](docs/BACKLOG.md).
 
 ## Build
 

@@ -29,6 +29,8 @@ enum CanvasZoomGeometry {
 struct ZoomCanvas<Content: View>: View {
     var ratio: CGFloat
     var tint: Color
+    /// A new value returns to Fit.
+    var fitWhenChanged: AnyHashable? = nil
     var resolutionChanged: (Bool) -> Void
     @ViewBuilder var content: (CGSize) -> Content
     @Environment(\.displayScale) private var displayScale
@@ -62,6 +64,7 @@ struct ZoomCanvas<Content: View>: View {
             }
         }
         .onChange(of: manualScale != nil) { _, manual in resolutionChanged(manual) }
+        .onChange(of: fitWhenChanged) { _, _ in manualScale = nil; pinchStart = nil }
     }
 
     private func zoomControl(scale: CGFloat) -> some View {

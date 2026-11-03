@@ -11,6 +11,9 @@ final class SourceImage: Equatable {
     let thumbnail: CGImage
     let fullImage: CIImage
     let previewImage: CIImage
+    /// Perceptual luminance on a coarse grid, rows from the top, for choosing crops cheaply.
+    let values: [Double]
+    static let valueGrid = 24
 
     static func == (lhs: SourceImage, rhs: SourceImage) -> Bool { lhs === rhs }
 
@@ -24,6 +27,29 @@ final class SourceImage: Equatable {
         previewImage = CIImage(cgImage: previewPixels).transformed(by: CGAffineTransform(
             scaleX: CGFloat(pixels.width) / CGFloat(previewPixels.width),
             y: CGFloat(pixels.height) / CGFloat(previewPixels.height)))
+        let n = Self.valueGrid
+        var grid = [Double](repeating: 0.5, count: n * n)
+        if let context = CGContext(data: nil, width: n, height: n, bitsPerComponent: 8, bytesPerRow: n, space: CGColorSpaceCreateDeviceGray(),
+                                   bitmapInfo: CGImageAlphaInfo.none.rawValue), let data = context.data?.assumingMemoryBound(to: UInt8.self) {
+            context.interpolationQuality = .medium
+            context.draw(thumbnail, in: CGRect(x: 0, y: 0, width: n, height: n))
+            for i in 0..<(n * n) { grid[i] = Double(data[i]) / 255 }
+        }
+        values = grid
+    }
+    /// Spread of values (with a little credit for light) in a window centred at `(x, y)`
+    /// (fractions from the left and top) with half-size `half`: higher reads as clearer shapes.
+    func valueStructure(x: Double, y: Double, half: Double) -> Double {
+        let n = Self.valueGrid
+        var samples: [Double] = []
+        for row in 0..<n { for column in 0..<n {
+            let u = (Double(column) + 0.5) / Double(n), v = (Double(row) + 0.5) / Double(n)
+            if abs(u - x) <= half && abs(v - y) <= half { samples.append(values[row * n + column]) }
+        }}
+        if samples.isEmpty { samples = [values[min(n - 1, max(0, Int(y * Double(n)))) * n + min(n - 1, max(0, Int(x * Double(n))))]] }
+        let mean = samples.reduce(0, +) / Double(samples.count)
+        let spread = (samples.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(samples.count)).squareRoot()
+        return spread + 0.2 * min(mean, 0.45)
     }
 
     convenience init?(data: Data) {
