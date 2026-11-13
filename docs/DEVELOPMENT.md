@@ -51,7 +51,7 @@ open Meld.app
 
 The app uses SwiftUI, AppKit, and Core Image. It is signed locally with an ad hoc signature.
 
-The app icon is an Icon Composer document, `Resources/Meld.icon`: three SwiftUI-drawn discs (`Resources/IconArt.swift`) with Liquid Glass on the system light background, which macOS adapts to dark, clear, and tinted appearances. `zsh make-icon.sh` redraws the layers and compiles the committed `Resources/Assets.car` and the `Meld.icns` fallback for macOS 14–15, plus `Resources/favicon.png`; it needs Xcode, while `build.sh` only copies the results.
+The app icon is an Icon Composer document, `Resources/Meld.icon`: three SwiftUI-drawn discs (`Resources/IconArt.swift`), each its own coloured Liquid Glass group, on the system light background, which macOS adapts to dark, clear, and tinted appearances. `zsh make-icon.sh` redraws the layers and compiles the committed `Resources/Assets.car` and the `Meld.icns` fallback for macOS 14–15, plus the dark `Resources/favicon.png`; it needs Xcode, while `build.sh` only copies the results.
 
 From the repository root, run the rendering and session checks from a normal Mac terminal (Core Image needs access to the graphics system):
 

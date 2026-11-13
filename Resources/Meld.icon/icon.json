@@ -1,15 +1,134 @@
 {
-  "fill" : "system-light",
-  "groups" : [
+  "features": [
+    "refractivity",
+    "specular-location"
+  ],
+  "fill": "system-light",
+  "groups": [
     {
-      "layers" : [
-        { "image-name" : "gold.png", "name" : "gold", "glass" : true, "opacity" : 0.7 },
-        { "image-name" : "coral.png", "name" : "coral", "glass" : true, "opacity" : 0.7 },
-        { "image-name" : "teal.png", "name" : "teal", "glass" : true, "opacity" : 0.7 }
+      "name": "gold",
+      "layers": [
+        {
+          "name": "gold",
+          "image-name": "gold.png",
+          "glass": true,
+          "fill-specializations": [
+            {
+              "value": {
+                "solid": "srgb:1.000000,0.780000,0.200000,1.000000"
+              }
+            },
+            {
+              "appearance": "tinted",
+              "value": {
+                "solid": "extended-gray:1.000000,1.000000"
+              }
+            }
+          ]
+        }
       ],
-      "shadow" : { "kind" : "neutral", "opacity" : 0.5 },
-      "translucency" : { "enabled" : true, "value" : 0.6 }
+      "lighting": "individual",
+      "specular": true,
+      "specular-highlight-placement": "automatic",
+      "blur-material": 0.3,
+      "translucency": {
+        "enabled": true,
+        "value": 0.5
+      },
+      "refractivity": {
+        "enabled": true,
+        "strength": 0.15,
+        "depth": 0.25
+      },
+      "shadow": {
+        "kind": "layer-color",
+        "opacity": 0.5
+      }
+    },
+    {
+      "name": "coral",
+      "layers": [
+        {
+          "name": "coral",
+          "image-name": "coral.png",
+          "glass": true,
+          "fill-specializations": [
+            {
+              "value": {
+                "solid": "srgb:1.000000,0.400000,0.300000,1.000000"
+              }
+            },
+            {
+              "appearance": "tinted",
+              "value": {
+                "solid": "extended-gray:0.750000,1.000000"
+              }
+            }
+          ]
+        }
+      ],
+      "lighting": "individual",
+      "specular": true,
+      "specular-highlight-placement": "automatic",
+      "blur-material": 0.3,
+      "translucency": {
+        "enabled": true,
+        "value": 0.5
+      },
+      "refractivity": {
+        "enabled": true,
+        "strength": 0.15,
+        "depth": 0.25
+      },
+      "shadow": {
+        "kind": "layer-color",
+        "opacity": 0.5
+      }
+    },
+    {
+      "name": "teal",
+      "layers": [
+        {
+          "name": "teal",
+          "image-name": "teal.png",
+          "glass": true,
+          "fill-specializations": [
+            {
+              "value": {
+                "solid": "srgb:0.000000,0.700000,0.720000,1.000000"
+              }
+            },
+            {
+              "appearance": "tinted",
+              "value": {
+                "solid": "extended-gray:0.550000,1.000000"
+              }
+            }
+          ]
+        }
+      ],
+      "lighting": "individual",
+      "specular": true,
+      "specular-highlight-placement": "automatic",
+      "blur-material": 0.3,
+      "translucency": {
+        "enabled": true,
+        "value": 0.5
+      },
+      "refractivity": {
+        "enabled": true,
+        "strength": 0.15,
+        "depth": 0.25
+      },
+      "shadow": {
+        "kind": "layer-color",
+        "opacity": 0.5
+      }
     }
   ],
-  "supported-platforms" : { "squares" : [ "macOS" ] }
+  "supported-platforms": {
+    "squares": [
+      "macOS"
+    ]
+  }
 }

@@ -11,7 +11,7 @@ out=$(mktemp -d /private/tmp/meld-icon.XXXXXX)
 xcrun actool Resources/Meld.icon --compile "$out" --platform macosx --minimum-deployment-target 14.0 \
     --app-icon Meld --output-partial-info-plist "$out/partial.plist" >/dev/null
 cp "$out/Assets.car" "$out/Meld.icns" Resources/
-# Light rendering for project lists such as T3 Code's favicon.
+# Dark rendering for project lists such as T3 Code's favicon.
 "$DEVELOPER_DIR/../Applications/Icon Composer.app/Contents/Executables/ictool" Resources/Meld.icon --export-image \
-    --output-file Resources/favicon.png --platform macOS --rendition Default --width 1024 --height 1024 --scale 1 >/dev/null
+    --output-file Resources/favicon.png --platform macOS --rendition Dark --width 1024 --height 1024 --scale 1 >/dev/null
 sips -Z 256 Resources/favicon.png >/dev/null
