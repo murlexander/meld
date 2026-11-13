@@ -8,6 +8,8 @@
 	<string>Meld</string>
 	<key>CFBundleIconFile</key>
 	<string>Meld</string>
+	<key>CFBundleIconName</key>
+	<string>Meld</string>
 	<key>CFBundleIdentifier</key>
 	<string>studio.meld.draft</string>
 	<key>CFBundleName</key>
