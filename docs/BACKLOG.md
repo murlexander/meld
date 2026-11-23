@@ -1,10 +1,10 @@
 # Meld backlog
 
-Meld turns a folder of photographs and textures into many abstract possibilities, then helps narrow them to a few painting references. Meld is a personal tool for Alex; there are no plans to distribute it. The core loop is **generate → cull → vary → refine → export**. Each direction below should make that loop faster or its results more useful to a painter.
+Meld turns a folder of photographs and textures into many abstract images, then helps narrow them to a few painting references. Meld is a personal tool for Alex; there are no plans to distribute it. The core loop is generate, cull, vary, refine and export. Each direction below should make that loop faster or its results more useful to a painter.
 
-## 0.6 — October 2026
+## 0.6, October 2026
 
-- Picks survive new sets; preview numbers are unique for the session.
+- Picks stay when a new set is generated. Preview numbers are unique for the session.
 - Variations: 12 relatives of any preview, including its adjustments, without decoding sources again.
 - Photos-style grid with keyboard culling (arrows, Return, F/D, V) and previous/next in refinement.
 - Values and Notan views, palette swatches with hex copy, palettes on contact sheets.
@@ -20,10 +20,10 @@ Meld turns a folder of photographs and textures into many abstract possibilities
 
 ## Decisions for Alex
 
-- **Session recovery.** Meld is deliberately export-only, with no save prompt. A quiet automatic recovery of the last session (no documents, no prompt) would remove the main remaining way to lose picks. Worth doing?
+- **Session recovery.** Meld is export-only by design, with no save prompt. Automatic recovery of the last session, with no documents and no prompt, would remove the main remaining way to lose picks. Worth doing?
 - **Louppe bridge.** Use Louppe's Yes items as Meld material, and send Meld exports back into the Louppe archive. This is the "broader archive" direction in the README; it needs a shared file convention before code.
 
 ## Not planned
 
-- Brush painting, masks and selection tools: Meld generates references; painting happens elsewhere.
+- Brush painting, masks and selection tools. Meld generates references, and the painting happens elsewhere.
 - Signed, notarised or public builds: Meld stays a local, ad hoc signed app.

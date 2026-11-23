@@ -1,6 +1,6 @@
 # Verification
 
-## Version 0.6 — 30 October 2026
+## Version 0.6, 30 October 2026
 
 298 rendering and session checks passed on the merged optimized build: the 224 earlier checks, 20 for the concurrent pipeline (below) and 54 for the 0.6 workflow. Product checks cover kept picks across sets and unique numbering, grid order, keyboard selection across rows and clamped columns, F/D picks, hidden-selection recovery, previous/next in refinement (including with Picks shown and after unpicking the open preview), thumbnail sizes without touching saved preferences, Values and Notan studies that never change the artwork, palette extraction and hex values, variations (12 distinct, same recipe and shape, from refined adjustments, reproducible by seed, made with the source folder disconnected, cancellable), unique export names across rows, Copy Image on a private pasteboard, and drag-out files at 2400 pixels.
 
@@ -18,7 +18,7 @@ Baseline before both changes: 1.07 s, 4.75 s and 1.64 s on the Fuji folder at a 
 
 The interface was checked with `--ui-snapshot` in light and dark appearance: source selection, a grid with two rows, a variations row, refinement with palette and View control, and Notan. An independent code review found no high-severity issues; its seven medium/low findings (hidden selections driving commands, F/D/V with Caps Lock or a Russian layout, navigation resetting panels, scroll-to-selection, column counting with scrollers, Esc while renaming a layer, ⌘+ without Shift) were fixed. Live pointer, drag-and-drop into other apps, and menu interaction were not exercised; snapshots don't render Liquid Glass.
 
-## Performance update — 30 October 2026
+## Performance update, 30 October 2026
 
 All 244 rendering and session checks passed on the optimized build, and 256 with the public Nikon NEF fixture (`MELD_RAW_FIXTURE`). The 224 earlier checks are unchanged; 20 new checks and waits cover the concurrent pipeline. Recipes, seeds, 480-pixel previews, 2400-pixel PNG exports, contact sheets, cancellation and late-callback guarantees are unchanged. Source files were only read.
 
@@ -51,7 +51,7 @@ Where the time went before: decoding was about 85% of generating 36 previews. A 
 - **Decoding** now runs three at a time, ahead of rendering (`Sources/Pipeline.swift`). The pool keeps sampled order: each group gets exactly the first 3, 5, 7… usable candidates, as a one-at-a-time decode would. No more than 12 decodes succeed, and unreadable files are counted as before.
 - **Previews** render three at a time on the shared batch context and are delivered in number order. The first group of six still appears early, and the first result still clears the previous set.
 - **Batch export** encodes up to four PNGs at a time with ImageIO (same bytes as `NSBitmapImageRep`), while their 2400-pixel renders take turns. The Flow displacement map is enlarged by Core Image instead of a CPU-side 2400-pixel copy (35 ms and 23 MB per export; mean difference about 1/255). Cancellation still stops new work and is checked before encoding and before writing.
-- The export folder name sets `en_US_POSIX`, so a 12-hour clock setting no longer produces names like “5.34.34 PM”.
+- The export folder name sets `en_US_POSIX`, so a 12-hour clock setting no longer produces names like "5.34.34 PM".
 
 New checks: ordered delivery and stopping of concurrent work; the ordered, bounded material pool with unreadable files; cancelled gathering; tiled-preview footprint; tile layout at both sizes; full-size wave map; progressive, numbered, distinct and balanced concurrent previews; parallel export identical to serial rendering (max one level per channel) in chosen order; mid-batch export cancellation with no late writes; and 24-hour folder names.
 
@@ -67,7 +67,7 @@ Tried and not kept:
 
 Profiling helpers and logs are in `/private/tmp/meld-perf-prof/`; the NEF fixture was downloaded to `/private/tmp/meld-perf-raw-fixture/` only. The GUI was not launched or installed.
 
-## Performance update — 7 October 2026
+## Performance update, 7 October 2026
 
 236 rendering and session checks passed on the final local build, including the public Nikon NEF fixture and 40 additional checks/waits covering the performance changes. The original 196 checks continue to pass. Product code was built with the normal optimized arm64 build. The temporary signed bundle passes strict signature verification, and its executable hash matches the local `Meld.app`. Finder/iCloud can reattach metadata to the local app after a successful verification; the signed staging copy printed by `build.sh` stays outside that directory. The installed app and running session were not replaced or restarted.
 
@@ -95,9 +95,9 @@ Synthetic and RAW contact sheets were visually inspected. Desktop inspection was
 
 The build script now verifies the staged signature and removes leftover Finder/resource-fork metadata from the generated local app copy. Finder/iCloud reattached metadata during verification, so this cleanup is not a persistent fix for cloud-managed directories. Use the signed staging copy printed by the build script when verifying or distributing the app.
 
-## Automatic playground — version 0.5, 7 October 2026
+## Automatic playground, version 0.5, 7 October 2026
 
-196 rendering and session checks passed with the real Nikon NEF fixture enabled. The default session now follows source folder → 36 previews → refine and export picks. The gallery occupies the main window. Refinement offers distortion, pattern amount, colour, and contrast; the existing layer workspace is available through More controls. The established native toolbar, teal accent, and floating zoom controls remain.
+196 rendering and session checks passed with the real Nikon NEF fixture enabled. The default session now goes from source folder to 36 previews, then to refining and exporting picks. The gallery occupies the main window. Refinement offers distortion, pattern amount, colour, and contrast; the existing layer workspace is available through More controls. The established native toolbar, teal accent, and floating zoom controls remain.
 
 - A session starts at source selection without a sample canvas. The remembered source is not scanned until requested. Square, portrait, and landscape are available before generation.
 - All 36 previews are distinct, with six of each composition style. Recursive folders, corrupt-file handling, unchanged source bytes, and a real Nikon NEF-only batch are covered.
@@ -119,11 +119,11 @@ The current live smoke pass, when desktop inspection is available:
 5. Generate a new set, stop partway, and refine a completed preview.
 6. Check More controls, inspector recovery, zoom, and light/dark appearance.
 
-## Earlier verification — 6 October 2026
+## Earlier verification, 6 October 2026
 
 The earlier audit passed 139 rendering and session checks, including a real Nikon NEF fixture. After adopting option 5, the standard rendering and session suite was rerun successfully; the optional real-RAW fixture was not repeated for this layout change. Fixtures and generated output are not bundled or committed.
 
-## Generator update — version 0.4
+## Generator update, version 0.4
 
 178 checks passed with the real Nikon NEF fixture enabled. The generated 24-image contact sheets were inspected for composition variety using both synthetic material and a RAW-only source folder.
 
